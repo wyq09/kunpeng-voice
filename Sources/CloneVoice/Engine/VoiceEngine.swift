@@ -1,44 +1,47 @@
 import Foundation
-import HuggingFace
-import MLX
-import MLXAudioCore
-import MLXAudioTTS
 import Observation
 
-/// UI-facing model state. All heavy work is delegated to `SynthesisWorker`.
+/// UI-facing state of the loaded model. All heavy work is delegated to `SynthesisWorker`.
 @MainActor
 @Observable
 final class VoiceEngine {
     enum Phase: Equatable {
         case idle
-        case downloading(Double)
         case loading
         case ready
         case failed(String)
     }
 
-    static let modelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
-    static let modelSizeText = "3.1 GB"
-
     private(set) var phase: Phase = .idle
+    private(set) var loadedSpec: ModelSpec?
     private let worker = SynthesisWorker()
-    private var prepareTask: Task<Void, Never>?
+    private var loadTask: Task<Void, Never>?
 
     var isReady: Bool { phase == .ready }
 
-    func prepare() {
-        guard prepareTask == nil, phase != .ready else { return }
-        prepareTask = Task {
-            defer { prepareTask = nil }
+    func load(_ spec: ModelSpec, from directory: URL) {
+        guard loadedSpec != spec || phase != .ready else { return }
+        loadTask?.cancel()
+        phase = .loading
+        loadTask = Task {
             do {
-                try await worker.load(repo: Self.modelRepo) { fraction in
-                    self.phase = fraction < 1 ? .downloading(fraction) : .loading
-                }
+                try await worker.load(spec, from: directory)
+                guard !Task.isCancelled else { return }
+                loadedSpec = spec
                 phase = .ready
             } catch {
-                phase = .failed(Self.describe(error))
+                guard !Task.isCancelled else { return }
+                loadedSpec = nil
+                phase = .failed("模型加载失败，可在模型管理里删除后重新下载。")
             }
         }
+    }
+
+    func unload() {
+        loadTask?.cancel()
+        loadedSpec = nil
+        phase = .idle
+        Task { await worker.unload() }
     }
 
     /// Returns mono float samples and their sample rate.
@@ -50,7 +53,11 @@ final class VoiceEngine {
         speed: SpeechSpeed = .normal,
         onProgress: @escaping @MainActor (Int, Int) -> Void
     ) async throws -> (samples: [Float], sampleRate: Int) {
-        let chunks = TextChunker.split(text)
+        guard let spec = loadedSpec else { throw EngineError.notReady }
+        let usesInstruction = spec.supportsEmotionInstruction
+        let prosody = style.prosody
+        let chunks = TextChunker.split(text, maxLength: spec.chunkLength)
+
         var output: [Float] = []
         var sampleRate = 24_000
         for (index, chunk) in chunks.enumerated() {
@@ -60,107 +67,59 @@ final class VoiceEngine {
                 text: chunk,
                 sampleURL: sampleURL,
                 referenceText: referenceText,
-                temperature: style.temperature
+                style: style
             )
             sampleRate = result.sampleRate
             if !output.isEmpty {
-                output += [Float](repeating: 0, count: Int(Double(sampleRate) * style.pause))
+                output += [Float](repeating: 0, count: Int(Double(sampleRate) * prosody.pause))
             }
             output += result.samples
         }
+
         let processed = try AudioEffects.process(
             output,
             sampleRate: sampleRate,
-            rate: style.tempo * speed.rate,
-            pitchCents: style.pitchCents
+            rate: (usesInstruction ? 1 : prosody.tempo) * speed.rate,
+            pitchCents: usesInstruction ? 0 : prosody.pitchCents
         )
-        return (processed, sampleRate)
+        return (AudioEffects.normalized(processed), sampleRate)
     }
+}
 
-    private static func describe(_ error: Error) -> String {
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain {
-            return "网络不通，模型没下载完。检查网络后点重试。"
-        }
-        return error.localizedDescription
-    }
+protocol CloneBackend: AnyObject {
+    var sampleRate: Int { get }
+    func generate(text: String, sampleURL: URL, referenceText: String, style: SpeechStyle) async throws -> [Float]
 }
 
 /// Owns the non-Sendable model so it is only ever touched from one executor.
 actor SynthesisWorker {
-    private var model: SpeechGenerationModel?
+    private var backend: CloneBackend?
 
-    private static let mirrorHost = URL(string: "https://hf-mirror.com")!
-
-    func load(repo: String, onProgress: @escaping @MainActor @Sendable (Double) -> Void) async throws {
-        guard model == nil else { return }
-        let repoID = Repo.ID(rawValue: repo)!
-        let handler: @MainActor @Sendable (Progress) -> Void = { onProgress($0.fractionCompleted) }
-
-        // Fixed location so the model is independent of the user's HF_HOME and stored only once.
-        let cache = HubCache(cacheDirectory: Self.modelsRoot)
-        let modelDir = Self.modelsRoot
-            .appendingPathComponent("mlx-audio")
-            .appendingPathComponent(repo.replacingOccurrences(of: "/", with: "_"))
-        let marker = modelDir.appendingPathComponent(".complete")
-        let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: modelDir.path), !fileManager.fileExists(atPath: marker.path) {
-            try? fileManager.removeItem(at: modelDir)
+    func load(_ spec: ModelSpec, from directory: URL) async throws {
+        backend = nil
+        releaseGPUMemory()
+        switch spec.family {
+        case .qwen3: backend = try await Qwen3Backend(directory: directory)
+        case .cosyVoice: backend = try await CosyVoiceBackend(directory: directory, modelID: spec.id)
+        case .voxCPM2, .voxCPM15: backend = try await VoxCPMBackend(directory: directory, modelID: spec.id)
         }
-
-        do {
-            _ = try await ModelUtils.resolveOrDownloadModel(
-                client: HubClient(cache: cache),
-                cache: cache,
-                repoID: repoID,
-                requiredExtension: "safetensors",
-                progressHandler: handler
-            )
-        } catch {
-            try? fileManager.removeItem(at: modelDir)
-            _ = try await ModelUtils.resolveOrDownloadModel(
-                client: HubClient(host: Self.mirrorHost, cache: cache),
-                cache: cache,
-                repoID: repoID,
-                requiredExtension: "safetensors",
-                progressHandler: handler
-            )
-        }
-        fileManager.createFile(atPath: marker.path, contents: nil)
-        await onProgress(1)
-        let loaded = try await Qwen3TTSModel.fromModelDirectory(modelDir)
-        // First inference JIT-compiles GPU kernels; pay that cost while the UI still says "loading".
-        _ = try? await loaded.generate(text: "你好。", voice: nil, refAudio: nil, refText: nil, language: "chinese")
-        Memory.clearCache()
-        model = loaded
     }
 
-    private static var modelsRoot: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CloneVoice/Models", isDirectory: true)
+    func unload() {
+        backend = nil
+        releaseGPUMemory()
     }
 
     func generate(
         text: String,
         sampleURL: URL,
         referenceText: String,
-        temperature: Float
+        style: SpeechStyle
     ) async throws -> (samples: [Float], sampleRate: Int) {
-        guard let model else { throw EngineError.notReady }
-        let (_, refAudio) = try loadAudioArray(from: sampleURL, sampleRate: model.sampleRate)
-        var parameters = model.defaultGenerationParameters
-        parameters.temperature = temperature
-        let audio = try await model.generate(
-            text: text,
-            voice: nil,
-            refAudio: refAudio,
-            refText: referenceText,
-            language: TextChunker.language(of: text),
-            generationParameters: parameters
-        )
-        let samples = audio.asArray(Float.self)
-        Memory.clearCache()
-        return (samples, model.sampleRate)
+        guard let backend else { throw EngineError.notReady }
+        let samples = try await backend.generate(text: text, sampleURL: sampleURL, referenceText: referenceText, style: style)
+        releaseGPUMemory()
+        return (samples, backend.sampleRate)
     }
 }
 
@@ -171,10 +130,8 @@ enum EngineError: LocalizedError {
 }
 
 enum TextChunker {
-    static let maxLength = 120
-
-    /// Splits long text at sentence boundaries; the model stays more stable on short inputs.
-    static func split(_ text: String) -> [String] {
+    /// Splits long text at sentence boundaries; the models stay more stable on short inputs.
+    static func split(_ text: String, maxLength: Int = 120) -> [String] {
         let terminators: Set<Character> = ["。", "！", "？", "；", "!", "?", ";", "\n", "."]
         var sentences: [String] = []
         var current = ""

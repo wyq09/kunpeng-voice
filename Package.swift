@@ -14,6 +14,7 @@ let package = Package(
         ),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.6")),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
+        .package(path: "Vendor/SpeechSwift"),
     ],
     targets: [
         .executableTarget(
@@ -23,6 +24,8 @@ let package = Package(
                 .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "CosyVoiceTTS", package: "SpeechSwift"),
+                .product(name: "VoxCPM2TTS", package: "SpeechSwift"),
             ],
             path: "Sources/CloneVoice",
             swiftSettings: [.swiftLanguageMode(.v5)]

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct VoiceDetailView: View {
     @Environment(VoiceStore.self) private var store
     @Environment(VoiceEngine.self) private var engine
+    @Environment(ModelManager.self) private var models
     @Environment(Player.self) private var player
 
     let voiceID: Voice.ID
@@ -47,6 +48,7 @@ struct VoiceDetailView: View {
                 generation?.cancel()
                 player.stop()
             }
+            .onChange(of: voice.name) { _, newName in name = newName }
             .onChange(of: engine.isReady) { _, isReady in
                 if isReady, isWaitingForModel { startGeneration() }
             }
@@ -166,13 +168,16 @@ struct VoiceDetailView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Picker("情绪", selection: $style) {
-                ForEach(SpeechStyle.allCases) { Text($0.title).tag($0) }
-            }
-            .help("说话的情绪和风格")
+            StylePicker(
+                selection: $style,
+                isApproximate: !(engine.loadedSpec ?? models.activeSpec).supportsEmotionInstruction,
+                onOpenModels: { models.isPresented = true }
+            )
             Picker("语速", selection: $speed) {
                 ForEach(SpeechSpeed.allCases) { Text($0.title).tag($0) }
             }
+            .pickerStyle(.segmented)
+            .fixedSize()
             .help("语速")
 
             statusLine
@@ -189,7 +194,6 @@ struct VoiceDetailView: View {
             .disabled(trimmedText.isEmpty || isBusy)
             .help("⌘↩ 生成")
         }
-        .pickerStyle(.segmented)
         .labelsHidden()
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -230,7 +234,11 @@ struct VoiceDetailView: View {
         errorMessage = nil
         guard engine.isReady else {
             isWaitingForModel = true
-            if case .failed = engine.phase { engine.prepare() }
+            if !models.isActiveDownloaded {
+                models.isPresented = true
+            } else if case .failed = engine.phase {
+                engine.load(models.activeSpec, from: models.directory(for: models.activeSpec))
+            }
             return
         }
         isWaitingForModel = false

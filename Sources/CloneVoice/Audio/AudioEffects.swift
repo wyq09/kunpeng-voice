@@ -1,6 +1,14 @@
 import AVFoundation
 
 enum AudioEffects {
+    /// Scales quiet audio up to a consistent peak; never attenuates beyond the target.
+    static func normalized(_ samples: [Float], peak target: Float = 0.89) -> [Float] {
+        let peak = samples.reduce(0) { max($0, abs($1)) }
+        guard peak > 1e-4, abs(peak - target) > 0.01 else { return samples }
+        let gain = target / peak
+        return samples.map { $0 * gain }
+    }
+
     /// Offline time-stretch and pitch shift; tempo changes keep the original pitch.
     static func process(_ samples: [Float], sampleRate: Int, rate: Float, pitchCents: Float) throws -> [Float] {
         guard rate != 1 || pitchCents != 0, !samples.isEmpty else { return samples }

@@ -7,9 +7,15 @@ enum SidebarItem: Hashable {
 
 struct RootView: View {
     @Environment(VoiceStore.self) private var store
+    @Environment(VoiceEngine.self) private var engine
+    @Environment(ModelManager.self) private var models
     @State private var selection: SidebarItem?
 
+    /// Changes whenever the model that should be in memory changes.
+    private var engineKey: String { "\(models.activeID)|\(models.isActiveDownloaded)" }
+
     var body: some View {
+        @Bindable var models = models
         NavigationSplitView {
             Sidebar(selection: $selection)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
@@ -18,7 +24,18 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.background)
         }
-        .onAppear { selection = store.voices.first.map { .voice($0.id) } ?? .newVoice }
+        .onAppear {
+            selection = store.voices.first.map { .voice($0.id) } ?? .newVoice
+            models.downloadActiveIfNothingInstalled()
+        }
+        .task(id: engineKey) {
+            if models.isActiveDownloaded {
+                engine.load(models.activeSpec, from: models.directory(for: models.activeSpec))
+            } else {
+                engine.unload()
+            }
+        }
+        .sheet(isPresented: $models.isPresented) { ModelManagerView() }
     }
 
     @ViewBuilder
@@ -39,7 +56,12 @@ struct RootView: View {
 
 private struct Sidebar: View {
     @Environment(VoiceStore.self) private var store
+    @Environment(Player.self) private var player
     @Binding var selection: SidebarItem?
+
+    @State private var renaming: Voice?
+    @State private var newName = ""
+    @State private var deleting: Voice?
 
     var body: some View {
         List(selection: $selection) {
@@ -54,6 +76,11 @@ private struct Sidebar: View {
                     }
                     .padding(.vertical, 3)
                     .tag(SidebarItem.voice(voice.id))
+                    .contextMenu {
+                        Button("重命名…") { startRenaming(voice) }
+                        Divider()
+                        Button("删除…", role: .destructive) { deleting = voice }
+                    }
                 }
                 Label("新建声音", systemImage: "plus")
                     .foregroundStyle(.secondary)
@@ -64,6 +91,33 @@ private struct Sidebar: View {
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top) { header }
         .safeAreaInset(edge: .bottom) { ModelStatusView() }
+        .alert("重命名声音", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("名字", text: $newName)
+            Button("取消", role: .cancel) {}
+            Button("保存") {
+                if let renaming { store.rename(renaming.id, to: newName) }
+            }
+        }
+        .confirmationDialog(
+            "删除「\(deleting?.name ?? "")」？",
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+        ) {
+            Button("删除", role: .destructive) {
+                guard let deleting else { return }
+                player.stop()
+                store.delete(deleting.id)
+                if selection == .voice(deleting.id) {
+                    selection = store.voices.first.map { .voice($0.id) } ?? .newVoice
+                }
+            }
+        } message: {
+            Text("声音样本和它生成的音频都会被删除。")
+        }
+    }
+
+    private func startRenaming(_ voice: Voice) {
+        newName = voice.name
+        renaming = voice
     }
 
     private var header: some View {
@@ -94,37 +148,57 @@ struct VoiceAvatar: View {
     }
 }
 
+/// Sidebar footer: always says what the model is doing and opens model management on click.
 private struct ModelStatusView: View {
     @Environment(VoiceEngine.self) private var engine
+    @Environment(ModelManager.self) private var models
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        Button { models.isPresented = true } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                content
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("模型管理（⌘,）")
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        let spec = models.activeSpec
+        switch models.status(of: spec) {
+        case .downloading(let fraction):
+            status(color: .orange, text: "正在下载 \(spec.name) \(Int(fraction * 100))%")
+            ProgressView(value: fraction).controlSize(.mini)
+            Text("只需下载一次，之后可离线使用").font(.caption2).foregroundStyle(.tertiary)
+        case .failed(let message):
+            status(color: .red, text: "模型下载失败")
+            Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        case .notDownloaded:
+            status(color: .gray, text: "还没有模型 · 点此下载")
+        case .downloaded:
             switch engine.phase {
-            case .idle:
-                status(color: .gray, text: "正在检查模型…")
-            case .downloading(let fraction):
-                status(color: .orange, text: "正在下载模型 \(Int(fraction * 100))% · \(VoiceEngine.modelSizeText)")
-                ProgressView(value: fraction).controlSize(.mini)
-                Text("只需下载一次，之后可离线使用").font(.caption2).foregroundStyle(.tertiary)
-            case .loading:
-                status(color: .orange, text: "正在加载模型…")
+            case .idle, .loading:
+                status(color: .orange, text: "正在加载 \(spec.name)…")
             case .ready:
-                status(color: .green, text: "模型就绪 · \(VoiceEngine.modelSizeText)")
+                status(color: .green, text: "\(spec.name) · 就绪")
             case .failed(let message):
-                status(color: .red, text: "模型准备失败")
+                status(color: .red, text: "模型加载失败")
                 Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("重试") { engine.prepare() }.controlSize(.small)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func status(color: Color, text: String) -> some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 7, height: 7)
-            Text(text).font(.caption).foregroundStyle(.secondary)
+            Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
         }
     }
 }
