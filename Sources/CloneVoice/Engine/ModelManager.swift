@@ -15,10 +15,11 @@ final class ModelManager {
     static let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("CloneVoice/Models", isDirectory: true)
     private static let hubCacheRoot = root.appendingPathComponent(".hub", isDirectory: true)
-    private static let mirrorHost = URL(string: "https://hf-mirror.com")!
     private static let activeKey = "activeModelID"
 
     private(set) var statuses: [ModelSpec.ID: Status] = [:]
+    /// Transient hint while a download is reconnecting.
+    private(set) var downloadNotes: [ModelSpec.ID: String] = [:]
     private(set) var activeID: ModelSpec.ID
     var isPresented = false
     private var tasks: [ModelSpec.ID: Task<Void, Never>] = [:]
@@ -71,16 +72,22 @@ final class ModelManager {
             } catch is CancellationError {
                 statuses[spec.id] = .notDownloaded
             } catch {
-                statuses[spec.id] = Task.isCancelled
-                    ? .notDownloaded
-                    : .failed("下载中断，检查网络后点重试。")
+                downloadNotes[spec.id] = nil
+                guard !Task.isCancelled else {
+                    statuses[spec.id] = .notDownloaded
+                    return
+                }
+                let saved = resumableFraction(of: spec).map { "已保存 \(Int($0 * 100))% 的进度，" } ?? ""
+                statuses[spec.id] = .failed("网络一直连不上，\(saved)检查网络后点「继续下载」接着下。")
             }
         }
     }
 
+    /// Stops the transfer but keeps what has been downloaded so far.
     func cancelDownload(_ spec: ModelSpec) {
         tasks[spec.id]?.cancel()
         tasks[spec.id] = nil
+        downloadNotes[spec.id] = nil
         statuses[spec.id] = .notDownloaded
     }
 
@@ -92,6 +99,12 @@ final class ModelManager {
         if spec.id == activeID, let fallback = ModelCatalog.all.first(where: { status(of: $0) == .downloaded }) {
             activate(fallback)
         }
+    }
+
+    func discardPartialDownload(_ spec: ModelSpec) {
+        guard status(of: spec) != .downloaded else { return }
+        cancelDownload(spec)
+        try? FileManager.default.removeItem(at: directory(for: spec))
     }
 
     func diskUsage(of spec: ModelSpec) -> Int64 { Self.allocatedSize(of: directory(for: spec)) }
@@ -114,7 +127,7 @@ final class ModelManager {
             if downloading.contains(name) { continue }
             if name == ".hub" {
                 if tasks.isEmpty { urls.append(url) }
-            } else if !knownFolders.contains(name) || !fileManager.fileExists(atPath: url.appendingPathComponent(".complete").path) {
+            } else if !knownFolders.contains(name) {
                 urls.append(url)
             }
         }
@@ -154,26 +167,36 @@ final class ModelManager {
         try? fileManager.removeItem(at: destination.appendingPathComponent(".complete"))
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
 
-        let repoID = Repo.ID(rawValue: spec.id)!
-        let cache = HubCache(cacheDirectory: Self.hubCacheRoot)
-        let onProgress: @MainActor @Sendable (Progress) -> Void = { [weak self] progress in
-            guard self?.tasks[spec.id] != nil else { return }
-            self?.statuses[spec.id] = .downloading(progress.fractionCompleted)
+        let downloader = ResumableDownloader(
+            repo: spec.id,
+            patterns: spec.downloadPatterns,
+            destination: destination
+        ) { [weak self] event in
+            await self?.handle(event, for: spec)
         }
-
-        do {
-            _ = try await HubClient(cache: cache).downloadSnapshot(
-                of: repoID, to: destination, matching: spec.downloadPatterns, progressHandler: onProgress
-            )
-        } catch where !(error is CancellationError) && !Task.isCancelled {
-            _ = try await HubClient(host: Self.mirrorHost, cache: cache).downloadSnapshot(
-                of: repoID, to: destination, matching: spec.downloadPatterns, progressHandler: onProgress
-            )
-        }
+        try await downloader.run()
         try Task.checkCancellation()
         fileManager.createFile(atPath: destination.appendingPathComponent(".complete").path, contents: nil)
-        // Snapshot files are APFS clones of the cache blobs, so dropping the cache keeps a single copy.
         removeHubCache(for: spec)
+    }
+
+    private func handle(_ event: ResumableDownloader.Event, for spec: ModelSpec) {
+        guard tasks[spec.id] != nil else { return }
+        switch event {
+        case .progress(let done, let total):
+            statuses[spec.id] = .downloading(total > 0 ? Double(done) / Double(total) : 0)
+            downloadNotes[spec.id] = nil
+        case .retrying(let attempt, let delay):
+            downloadNotes[spec.id] = "网络断了，\(delay) 秒后自动重连（第 \(attempt) 次），已下载的部分不会丢"
+        }
+    }
+
+    /// Share of an unfinished download already on disk, so the UI can offer "继续下载".
+    func resumableFraction(of spec: ModelSpec) -> Double? {
+        guard status(of: spec) != .downloaded, spec.sizeBytes > 0 else { return nil }
+        let bytes = ResumableDownloader.resumableBytes(in: directory(for: spec))
+        guard bytes > 1_000_000 else { return nil }
+        return min(0.99, Double(bytes) / Double(spec.sizeBytes))
     }
 
     private func removeHubCache(for spec: ModelSpec) {
@@ -212,7 +235,7 @@ final class ModelManager {
         return values?.volumeAvailableCapacityForImportantUsage
     }
 
-    static func allocatedSize(of url: URL) -> Int64 {
+    nonisolated static func allocatedSize(of url: URL) -> Int64 {
         let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .isRegularFileKey]
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }

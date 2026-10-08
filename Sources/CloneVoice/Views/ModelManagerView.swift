@@ -124,6 +124,8 @@ private struct ModelRow: View {
                 Text(spec.detail).font(.callout).foregroundStyle(.secondary)
                 if case .failed(let message) = status {
                     Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                } else if let note = models.downloadNotes[spec.id] {
+                    Text(note).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(sizeLine).font(.caption).foregroundStyle(.tertiary)
                 }
@@ -149,10 +151,23 @@ private struct ModelRow: View {
     @ViewBuilder
     private var actions: some View {
         switch status {
-        case .notDownloaded:
-            Button("下载") { models.download(spec) }
-        case .failed:
-            Button("重试") { models.download(spec) }
+        case .notDownloaded, .failed:
+            if let fraction = models.resumableFraction(of: spec) {
+                HStack(spacing: 8) {
+                    Button("继续下载 \(Int(fraction * 100))%") { models.download(spec) }
+                        .help("从上次断开的地方接着下")
+                    Menu {
+                        Button("放弃已下载的部分", role: .destructive) { models.discardPartialDownload(spec) }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                }
+            } else {
+                Button(status == .notDownloaded ? "下载" : "重试") { models.download(spec) }
+            }
         case .downloading(let fraction):
             HStack(spacing: 8) {
                 ProgressView(value: fraction).frame(width: 90)
@@ -160,7 +175,7 @@ private struct ModelRow: View {
                 Button { models.cancelDownload(spec) } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
-                    .help("取消下载")
+                    .help("暂停下载，已下载的部分会保留")
             }
         case .downloaded:
             HStack(spacing: 8) {
