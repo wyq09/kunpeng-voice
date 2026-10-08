@@ -37,7 +37,7 @@ final class MCPServer {
             reply(id, [
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": [String: Any]()],
-                "serverInfo": ["name": "clonevoice", "title": "我的声音", "version": "1.0"],
+                "serverInfo": ["name": "clonevoice", "title": "鲲鹏有声", "version": "1.0"],
                 "instructions": "用用户克隆的声音把文字读出来，生成本地 wav 文件。先调用 list_voices 查看可用声音，再调用 speak。",
             ])
         case "ping":
@@ -122,7 +122,7 @@ final class MCPServer {
         [
             "name": "list_voices",
             "title": "列出克隆的声音",
-            "description": "列出用户在「我的声音」里克隆的所有声音。",
+            "description": "列出用户在「鲲鹏有声」里克隆的所有声音。",
             "inputSchema": ["type": "object", "properties": [String: Any]()],
         ],
         [
@@ -144,7 +144,7 @@ final class MCPServer {
                         "description": "没有标签的文字用的情绪，默认「自然」",
                     ],
                     "speed": ["type": "string", "enum": ["慢", "正常", "快"], "description": "语速，默认正常"],
-                    "output_path": ["type": "string", "description": "保存位置（.wav），默认 ~/Music/我的声音/"],
+                    "output_path": ["type": "string", "description": "保存位置（.wav），默认 ~/Music/鲲鹏有声/"],
                     "play": ["type": "boolean", "description": "生成后直接在这台 Mac 上播放"],
                 ],
                 "required": ["text"],

@@ -21,13 +21,13 @@ final class HeadlessSpeaker {
         var errorDescription: String? {
             switch self {
             case .noVoices:
-                "还没有声音。先打开「我的声音」应用录一段声音。"
+                "还没有声音。先打开「鲲鹏有声」应用录一段声音。"
             case .unknownVoice(let name, let available):
                 "找不到声音「\(name)」。可用的声音：\(available.joined(separator: "、"))"
             case .unknownStyle(let name):
                 "不认识情绪「\(name)」。可用：\(SpeechStyle.allCases.map(\.title).joined(separator: "、"))"
             case .noModel:
-                "还没有下载模型。打开「我的声音」应用，在「模型管理」里下载一个模型后再试。"
+                "还没有下载模型。打开「鲲鹏有声」应用，在「模型管理」里下载一个模型后再试。"
             case .modelFailed(let message):
                 message
             }
@@ -35,7 +35,7 @@ final class HeadlessSpeaker {
     }
 
     static let defaultOutputDirectory = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("我的声音", isDirectory: true)
+        .appendingPathComponent("鲲鹏有声", isDirectory: true)
 
     private let store = VoiceStore()
     private let models = ModelManager()

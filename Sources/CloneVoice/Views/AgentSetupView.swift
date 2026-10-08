@@ -122,7 +122,7 @@ struct AgentSetupView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("接好后，试着对 Agent 说").font(.headline)
             CodeBlock("用我的声音读出来并播放：[开心]今天的任务都完成啦！[平静]明天见。")
-            Text("Agent 会调用 speak 工具，音频默认保存在 ~/Music/我的声音/。文字里的 [情绪] 标签同样有效。")
+            Text("Agent 会调用 speak 工具，音频默认保存在 ~/Music/鲲鹏有声/。文字里的 [情绪] 标签同样有效。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -205,7 +205,7 @@ private struct CodeBlock: View {
 enum Integration {
     static let serverName = "clonevoice"
 
-    static var executablePath: String { Bundle.main.executableURL?.path ?? "/Applications/我的声音.app/Contents/MacOS/CloneVoice" }
+    static var executablePath: String { Bundle.main.executableURL?.path ?? "/Applications/鲲鹏有声.app/Contents/MacOS/CloneVoice" }
     static var quotedExecutable: String { shellQuoted(executablePath) }
 
     static var appLocation: String { Bundle.main.bundleURL.deletingLastPathComponent().path }
@@ -237,7 +237,7 @@ enum Integration {
         """
         \(command) voices
         \(command) speak "[开心]你好呀！[平静]今天过得怎么样？" --play
-        \(command) speak "欢迎收听" --voice 我的声音 --style 播音 --out ~/Desktop/intro.wav
+        \(command) speak "欢迎收听" --voice 小明 --style 播音 --out ~/Desktop/intro.wav
         """
     }
 

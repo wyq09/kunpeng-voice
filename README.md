@@ -1,4 +1,4 @@
-# 我的声音
+# 鲲鹏有声
 
 原生 macOS 声音克隆应用。录 10 秒左右的朗读，之后输入任意文字，就能用你的声音读出来。全部在本机运行，音频不上传。
 
@@ -10,8 +10,8 @@
 
 ```bash
 xcodebuild -downloadComponent MetalToolchain   # 仅首次
-./build.sh                                      # 产物：build/我的声音.app
-open build/我的声音.app
+./build.sh                                      # 产物：build/鲲鹏有声.app
+open build/鲲鹏有声.app
 ```
 
 首次启动会自动下载模型（3.1 GB），huggingface.co 不通时自动切换 hf-mirror.com。

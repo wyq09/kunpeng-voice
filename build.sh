@@ -1,12 +1,12 @@
 #!/bin/zsh
-# Builds 我的声音.app into ./build. MLX's Metal shaders require xcodebuild (plain `swift build` cannot compile them).
+# Builds 鲲鹏有声.app into ./build. MLX's Metal shaders require xcodebuild (plain `swift build` cannot compile them).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 CONFIG="${CONFIG:-Release}"
 DERIVED="build/DerivedData"
 PRODUCTS="$DERIVED/Build/Products/$CONFIG"
-APP="build/我的声音.app"
+APP="build/鲲鹏有声.app"
 mkdir -p build
 
 xcodebuild -scheme CloneVoice \

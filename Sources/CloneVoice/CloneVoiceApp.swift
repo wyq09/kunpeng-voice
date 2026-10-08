@@ -21,7 +21,7 @@ struct CloneVoiceApp: App {
     @State private var agentSetup = AgentSetup()
 
     var body: some Scene {
-        WindowGroup("我的声音") {
+        WindowGroup("鲲鹏有声") {
             RootView()
                 .environment(store)
                 .environment(engine)

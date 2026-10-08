@@ -133,7 +133,7 @@ private struct Sidebar: View {
             Image(nsImage: NSApplication.shared.applicationIconImage)
                 .resizable()
                 .frame(width: 28, height: 28)
-            Text("我的声音").font(.headline)
+            Text("鲲鹏有声").font(.headline)
             Spacer()
         }
         .padding(.horizontal, 16)

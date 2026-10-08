@@ -73,13 +73,13 @@ enum CommandLineTool {
     }
 
     static let usage = """
-    我的声音 · 命令行
+    鲲鹏有声 · 命令行
       voices                              列出声音
       speak "文字" [选项]                  生成语音，输出 wav 路径
         -v, --voice 名字                   默认最近创建的声音
         -s, --style 情绪                   如 开心、生气；文字里也可写 [生气]…
             --speed 慢|正常|快
-        -o, --out 文件.wav                 默认 ~/Music/我的声音/
+        -o, --out 文件.wav                 默认 ~/Music/鲲鹏有声/
             --play                         生成后直接播放
       mcp                                 以 MCP 服务器运行（供 Agent 接入）
     """
