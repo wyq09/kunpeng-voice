@@ -16,6 +16,7 @@ struct VoiceDetailView: View {
     @AppStorage("speechSpeed") private var speed: SpeechSpeed = .normal
 
     @State private var text = ""
+    @State private var textSelection: TextSelection?
     @State private var name = ""
     @State private var isWaitingForModel = false
     @State private var generation: Task<Void, Never>?
@@ -23,6 +24,7 @@ struct VoiceDetailView: View {
     @State private var startedAt: Date?
     @State private var errorMessage: String?
     @State private var isConfirmingDelete = false
+    @State private var referenceDraft: String?
     @State private var isHistoryExpanded = true
     @FocusState private var isEditorFocused: Bool
 
@@ -61,6 +63,22 @@ struct VoiceDetailView: View {
             } message: {
                 Text("声音样本和它生成的 \(voice.clips.count) 段音频都会被删除。")
             }
+            .alert("校对参考文字", isPresented: Binding(
+                get: { referenceDraft != nil },
+                set: { if !$0 { referenceDraft = nil } }
+            )) {
+                TextField("录音里说的每一个字", text: Binding(
+                    get: { referenceDraft ?? "" },
+                    set: { referenceDraft = $0 }
+                ))
+                Button("取消", role: .cancel) {}
+                Button("重新识别") { recognizeReference(voice) }
+                Button("保存") {
+                    if let referenceDraft { store.setReferenceText(voiceID, to: referenceDraft) }
+                }
+            } message: {
+                Text("要和录音里说的一字不差（包括开头的「你好」这类口头语），否则生成时可能多读或漏读。")
+            }
         }
     }
 
@@ -74,12 +92,15 @@ struct VoiceDetailView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .onSubmit { store.rename(voiceID, to: name) }
                     .help("点击修改名字")
-                Text("参考录音「\(voice.referenceText)」")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(voice.referenceText)
+                Button { referenceDraft = voice.referenceText } label: {
+                    Text("参考录音「\(voice.referenceText)」")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("点击校对：要和录音里说的一字不差，否则可能多读或漏读")
             }
             Spacer(minLength: 12)
             let sampleURL = store.fileURL(voice.sampleFileName)
@@ -90,7 +111,12 @@ struct VoiceDetailView: View {
             }
             .buttonStyle(.borderless)
             .help(player.isPlaying(sampleURL) ? "停止" : "听原声")
+            if (engine.loadedSpec ?? models.activeSpec).family == .qwen3 {
+                languageMenu(voice)
+            }
             Menu {
+                Button("校对参考文字…") { referenceDraft = voice.referenceText }
+                Divider()
                 Button("删除这个声音…", role: .destructive) { isConfirmingDelete = true }
             } label: {
                 Image(systemName: "ellipsis")
@@ -104,25 +130,102 @@ struct VoiceDetailView: View {
         .padding(.bottom, 8)
     }
 
-    private var editor: some View {
-        ZStack(alignment: .topLeading) {
-            if text.isEmpty {
-                Text("输入想让「\(name)」说的话…")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 5)
-                    .allowsHitTesting(false)
+    private func languageMenu(_ voice: Voice) -> some View {
+        Menu {
+            Picker("主语言", selection: Binding(
+                get: { voice.primaryLanguage },
+                set: { store.setLanguage(voiceID, to: $0) }
+            )) {
+                ForEach(VoiceLanguage.allCases) { Text($0.title).tag($0) }
             }
-            TextEditor(text: $text)
-                .scrollContentBackground(.hidden)
-                .font(.system(size: 18))
-                .lineSpacing(6)
-                .focused($isEditorFocused)
-                .disabled(isBusy)
+            .pickerStyle(.inline)
+        } label: {
+            Label(voice.primaryLanguage.title, systemImage: "globe")
+                .labelStyle(.titleAndIcon)
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("主语言：Qwen3-TTS 固定用这个语言朗读，不会中途串语言")
+    }
+
+    private var editor: some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text("输入想让「\(name)」说的话…\n想让每一段情绪不同，可以这样写：[生气]我真的生气了。[害怕]我被吓到了。")
+                        .font(.system(size: 18))
+                        .lineSpacing(6)
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $text, selection: $textSelection)
+                    .scrollContentBackground(.hidden)
+                    .font(.system(size: 18))
+                    .lineSpacing(6)
+                    .focused($isEditorFocused)
+                    .disabled(isBusy)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            editorFooter
         }
         .padding(.horizontal, 15)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var editorFooter: some View {
+        HStack(spacing: 8) {
+            scriptSummary
+            Spacer(minLength: 8)
+            Menu {
+                ForEach(SpeechStyle.Group.allCases) { group in
+                    Section(group.title) {
+                        ForEach(SpeechStyle.styles(in: group)) { tagStyle in
+                            Button("[\(tagStyle.title)]") { insertTag(tagStyle) }
+                        }
+                    }
+                }
+            } label: {
+                Label("插入情绪标签", systemImage: "tag")
+                    .labelStyle(.titleAndIcon)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(isBusy)
+            .help("在光标处插入标签，标签后面的文字都用这个情绪，直到下一个标签")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 5)
+    }
+
+    @ViewBuilder
+    private var scriptSummary: some View {
+        let script = StyledScript(text, defaultStyle: style)
+        if script.usesTags {
+            let flow = script.segments.map(\.style.title).joined(separator: " → ")
+            let unknown = script.unknownTags.isEmpty
+                ? ""
+                : " · 不认识「\(script.unknownTags.joined(separator: "、"))」，已跳过"
+            Text("分 \(script.segments.count) 段：\(flow)\(unknown)")
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(script.unknownTags.isEmpty ? Color.secondary : Color.orange)
+        }
+    }
+
+    private func insertTag(_ tagStyle: SpeechStyle) {
+        let tag = "[\(tagStyle.title)]"
+        if case .selection(let range) = textSelection?.indices,
+           range.lowerBound >= text.startIndex, range.upperBound <= text.endIndex {
+            let offset = text.distance(from: text.startIndex, to: range.lowerBound)
+            text.replaceSubrange(range, with: tag)
+            textSelection = TextSelection(insertionPoint: text.index(text.startIndex, offsetBy: offset + tag.count))
+        } else {
+            text += tag
+        }
+        isEditorFocused = true
     }
 
     private func history(_ voice: Voice) -> some View {
@@ -260,6 +363,7 @@ struct VoiceDetailView: View {
                     text: input,
                     sampleURL: store.fileURL(voice.sampleFileName),
                     referenceText: voice.referenceText,
+                    language: voice.primaryLanguage,
                     style: style,
                     speed: speed
                 ) { current, total in progress = (current, total) }
@@ -273,8 +377,21 @@ struct VoiceDetailView: View {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as EngineError {
+                errorMessage = error.errorDescription
             } catch {
                 errorMessage = "生成失败，改短一点再试试"
+            }
+        }
+    }
+
+    private func recognizeReference(_ voice: Voice) {
+        Task {
+            do {
+                let heard = try await Transcriber.transcribe(store.fileURL(voice.sampleFileName))
+                referenceDraft = heard
+            } catch {
+                errorMessage = error.localizedDescription
             }
         }
     }

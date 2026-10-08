@@ -6,9 +6,13 @@ struct Voice: Identifiable, Codable, Hashable {
     let createdAt: Date
     let duration: TimeInterval
     /// Transcript of the reference clip; the model needs it to align voice and text.
-    let referenceText: String
+    var referenceText: String
     let sampleFileName: String
     var clips: [Clip] = []
+    /// Chosen by the user; otherwise inferred from the reference transcript.
+    var language: VoiceLanguage?
+
+    var primaryLanguage: VoiceLanguage { language ?? .detect(in: referenceText) }
 
     var subtitle: String {
         "\(createdAt.formatted(.dateTime.month().day())) · \(Int(duration.rounded())) 秒"
@@ -26,6 +30,7 @@ struct Clip: Identifiable, Codable, Hashable {
 
     var deliveryText: String? {
         guard let style, let speed else { return nil }
-        return speed == .normal ? style.title : "\(style.title) · \(speed.title)速"
+        let styleText = StyledScript(text, defaultStyle: style).usesTags ? "多段情绪" : style.title
+        return speed == .normal ? styleText : "\(styleText) · \(speed.title)速"
     }
 }

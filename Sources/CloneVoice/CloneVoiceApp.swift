@@ -2,12 +2,23 @@ import AppKit
 import SwiftUI
 
 @main
+enum AppEntry {
+    static func main() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if let command = arguments.first, CommandLineTool.commands.contains(command) {
+            CommandLineTool.run(arguments)
+        }
+        CloneVoiceApp.main()
+    }
+}
+
 struct CloneVoiceApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = VoiceStore()
     @State private var engine = VoiceEngine()
     @State private var models = ModelManager()
     @State private var player = Player()
+    @State private var agentSetup = AgentSetup()
 
     var body: some Scene {
         WindowGroup("我的声音") {
@@ -16,6 +27,7 @@ struct CloneVoiceApp: App {
                 .environment(engine)
                 .environment(models)
                 .environment(player)
+                .environment(agentSetup)
                 .frame(minWidth: 820, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)
@@ -24,6 +36,7 @@ struct CloneVoiceApp: App {
             CommandGroup(after: .appSettings) {
                 Button("模型管理…") { models.isPresented = true }
                     .keyboardShortcut(",", modifiers: .command)
+                Button("接入 Agent…") { agentSetup.isPresented = true }
             }
         }
     }

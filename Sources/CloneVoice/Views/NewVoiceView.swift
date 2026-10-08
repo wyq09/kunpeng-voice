@@ -185,15 +185,14 @@ struct NewVoiceView: View {
             .padding(14)
             .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
 
-            if mode == .upload {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("音频里说的话").font(.caption).foregroundStyle(.secondary)
-                    TextField("请填写音频里说的每一个字", text: $referenceText, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                    Text(notice ?? "已自动识别，有错字改一下，克隆会更像。")
-                        .font(.caption)
-                        .foregroundStyle(notice == nil ? Color.secondary : Color.orange)
-                }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("音频里说的话").font(.caption).foregroundStyle(.secondary)
+                TextField("请填写音频里说的每一个字", text: $referenceText, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isTranscribing)
+                Text(notice ?? (isTranscribing ? "正在核对你实际说的话…" : "已按录音自动识别，和录音一字不差时克隆最像，有错字改一下。"))
+                    .font(.caption)
+                    .foregroundStyle(notice == nil ? Color.secondary : Color.orange)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -237,7 +236,7 @@ struct NewVoiceView: View {
     // MARK: - Actions
 
     private var canSave: Bool {
-        let hasText = mode == .record || !referenceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !referenceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText && !isTranscribing
     }
 
@@ -257,6 +256,16 @@ struct NewVoiceView: View {
         referenceText = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         name = defaultName
         sampleURL = url
+
+        // People rarely read the prompt verbatim; a mismatched transcript makes the clone leak or skip words.
+        isTranscribing = true
+        Task {
+            defer { isTranscribing = false }
+            if let heard = try? await Transcriber.transcribe(url),
+               !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                referenceText = heard
+            }
+        }
     }
 
     private func importAudio(_ url: URL) {

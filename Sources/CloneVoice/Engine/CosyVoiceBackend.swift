@@ -16,13 +16,14 @@ final class CosyVoiceBackend: CloneBackend {
         )
     }
 
-    func generate(text: String, sampleURL: URL, referenceText: String, style: SpeechStyle) async throws -> [Float] {
+    func generate(
+        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle
+    ) async throws -> [Float] {
         let profile = try profile(for: sampleURL, referenceText: referenceText)
-        let language = TextChunker.language(of: text)
         guard let instruction = style.instruction else {
-            return model.synthesize(text: text, voiceProfile: profile, language: language)
+            return model.synthesize(text: text, voiceProfile: profile, language: language.rawValue)
         }
-        return model.synthesize(text: text, voiceProfile: profile, language: language, instruction: instruction)
+        return model.synthesize(text: text, voiceProfile: profile, language: language.rawValue, instruction: instruction)
     }
 
     private func profile(for sampleURL: URL, referenceText: String) throws -> CosyVoiceVoiceProfile {

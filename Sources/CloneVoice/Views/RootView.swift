@@ -9,6 +9,7 @@ struct RootView: View {
     @Environment(VoiceStore.self) private var store
     @Environment(VoiceEngine.self) private var engine
     @Environment(ModelManager.self) private var models
+    @Environment(AgentSetup.self) private var agentSetup
     @State private var selection: SidebarItem?
 
     /// Changes whenever the model that should be in memory changes.
@@ -16,6 +17,7 @@ struct RootView: View {
 
     var body: some View {
         @Bindable var models = models
+        @Bindable var agentSetup = agentSetup
         NavigationSplitView {
             Sidebar(selection: $selection)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
@@ -36,6 +38,7 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $models.isPresented) { ModelManagerView() }
+        .sheet(isPresented: $agentSetup.isPresented) { AgentSetupView() }
     }
 
     @ViewBuilder
@@ -90,7 +93,12 @@ private struct Sidebar: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .top) { header }
-        .safeAreaInset(edge: .bottom) { ModelStatusView() }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                AgentSetupButton()
+                ModelStatusView()
+            }
+        }
         .alert("重命名声音", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("名字", text: $newName)
             Button("取消", role: .cancel) {}
@@ -122,11 +130,9 @@ private struct Sidebar: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "waveform")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 26, height: 26)
-                .background(.primary, in: RoundedRectangle(cornerRadius: 7))
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .frame(width: 28, height: 28)
             Text("我的声音").font(.headline)
             Spacer()
         }
@@ -145,6 +151,28 @@ struct VoiceAvatar: View {
             .foregroundStyle(.secondary)
             .frame(width: size, height: size)
             .background(.quaternary, in: Circle())
+    }
+}
+
+private struct AgentSetupButton: View {
+    @Environment(AgentSetup.self) private var agentSetup
+
+    var body: some View {
+        Button { agentSetup.isPresented = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "puzzlepiece.extension")
+                Text("接入 Agent")
+                Spacer(minLength: 0)
+                Text("MCP · 命令行").foregroundStyle(.tertiary)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("让 Claude Code、Cursor、Codex 等用你的声音说话")
     }
 }
 

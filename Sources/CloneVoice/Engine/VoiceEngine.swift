@@ -45,50 +45,57 @@ final class VoiceEngine {
     }
 
     /// Returns mono float samples and their sample rate.
+    /// `text` may contain inline tags like `[生气]`; each tagged part is spoken in its own style.
     func synthesize(
         text: String,
         sampleURL: URL,
         referenceText: String,
+        language: VoiceLanguage,
         style: SpeechStyle = .natural,
         speed: SpeechSpeed = .normal,
         onProgress: @escaping @MainActor (Int, Int) -> Void
     ) async throws -> (samples: [Float], sampleRate: Int) {
         guard let spec = loadedSpec else { throw EngineError.notReady }
         let usesInstruction = spec.supportsEmotionInstruction
-        let prosody = style.prosody
-        let chunks = TextChunker.split(text, maxLength: spec.chunkLength)
+        let jobs = StyledScript(text, defaultStyle: style).segments.flatMap { segment in
+            TextChunker.split(segment.text, maxLength: spec.chunkLength).map { (style: segment.style, text: $0) }
+        }
+        guard !jobs.isEmpty else { throw EngineError.emptyText }
 
         var output: [Float] = []
         var sampleRate = 24_000
-        for (index, chunk) in chunks.enumerated() {
+        for (index, job) in jobs.enumerated() {
             try Task.checkCancellation()
-            onProgress(index + 1, chunks.count)
+            onProgress(index + 1, jobs.count)
             let result = try await worker.generate(
-                text: chunk,
+                text: job.text,
                 sampleURL: sampleURL,
                 referenceText: referenceText,
-                style: style
+                language: language,
+                style: job.style
             )
             sampleRate = result.sampleRate
+            let prosody = job.style.prosody
+            let shaped = try AudioEffects.process(
+                result.samples,
+                sampleRate: sampleRate,
+                rate: (usesInstruction ? 1 : prosody.tempo) * speed.rate,
+                pitchCents: usesInstruction ? 0 : prosody.pitchCents
+            )
             if !output.isEmpty {
                 output += [Float](repeating: 0, count: Int(Double(sampleRate) * prosody.pause))
             }
-            output += result.samples
+            output += shaped
         }
-
-        let processed = try AudioEffects.process(
-            output,
-            sampleRate: sampleRate,
-            rate: (usesInstruction ? 1 : prosody.tempo) * speed.rate,
-            pitchCents: usesInstruction ? 0 : prosody.pitchCents
-        )
-        return (AudioEffects.normalized(processed), sampleRate)
+        return (AudioEffects.normalized(output), sampleRate)
     }
 }
 
 protocol CloneBackend: AnyObject {
     var sampleRate: Int { get }
-    func generate(text: String, sampleURL: URL, referenceText: String, style: SpeechStyle) async throws -> [Float]
+    func generate(
+        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle
+    ) async throws -> [Float]
 }
 
 /// Owns the non-Sendable model so it is only ever touched from one executor.
@@ -114,10 +121,12 @@ actor SynthesisWorker {
         text: String,
         sampleURL: URL,
         referenceText: String,
+        language: VoiceLanguage,
         style: SpeechStyle
     ) async throws -> (samples: [Float], sampleRate: Int) {
         guard let backend else { throw EngineError.notReady }
-        let samples = try await backend.generate(text: text, sampleURL: sampleURL, referenceText: referenceText, style: style)
+        let samples = try await backend.generate(
+            text: text, sampleURL: sampleURL, referenceText: referenceText, language: language, style: style)
         releaseGPUMemory()
         return (samples, backend.sampleRate)
     }
@@ -125,8 +134,14 @@ actor SynthesisWorker {
 
 enum EngineError: LocalizedError {
     case notReady
+    case emptyText
 
-    var errorDescription: String? { "模型还在准备，稍等片刻再试。" }
+    var errorDescription: String? {
+        switch self {
+        case .notReady: "模型还在准备，稍等片刻再试。"
+        case .emptyText: "去掉标签后没有可读的文字。"
+        }
+    }
 }
 
 enum TextChunker {
@@ -155,13 +170,5 @@ enum TextChunker {
         }
         if !buffer.isEmpty { chunks.append(buffer) }
         return chunks
-    }
-
-    static func language(of text: String) -> String {
-        let scalars = text.unicodeScalars
-        if scalars.contains(where: { (0x3040...0x30FF).contains($0.value) }) { return "japanese" }
-        if scalars.contains(where: { (0xAC00...0xD7AF).contains($0.value) }) { return "korean" }
-        if scalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return "chinese" }
-        return "auto"
     }
 }

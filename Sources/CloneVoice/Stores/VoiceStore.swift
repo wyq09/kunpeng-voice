@@ -47,6 +47,19 @@ final class VoiceStore {
         save()
     }
 
+    func setReferenceText(_ id: Voice.ID, to text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let index = voices.firstIndex(where: { $0.id == id }) else { return }
+        voices[index].referenceText = trimmed
+        save()
+    }
+
+    func setLanguage(_ id: Voice.ID, to language: VoiceLanguage) {
+        guard let index = voices.firstIndex(where: { $0.id == id }) else { return }
+        voices[index].language = language
+        save()
+    }
+
     func delete(_ id: Voice.ID) {
         guard let index = voices.firstIndex(where: { $0.id == id }) else { return }
         let voice = voices.remove(at: index)
