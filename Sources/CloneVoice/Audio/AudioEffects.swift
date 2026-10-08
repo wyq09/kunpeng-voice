@@ -9,6 +9,33 @@ enum AudioEffects {
         return samples.map { $0 * gain }
     }
 
+    static func resampled(_ samples: [Float], from sourceRate: Int, to targetRate: Int) -> [Float] {
+        guard sourceRate != targetRate, !samples.isEmpty,
+              let source = AVAudioFormat(standardFormatWithSampleRate: Double(sourceRate), channels: 1),
+              let target = AVAudioFormat(standardFormatWithSampleRate: Double(targetRate), channels: 1),
+              let converter = AVAudioConverter(from: source, to: target),
+              let input = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(samples.count)),
+              let output = AVAudioPCMBuffer(
+                pcmFormat: target,
+                frameCapacity: AVAudioFrameCount(samples.count * targetRate / sourceRate + 1024))
+        else { return samples }
+        input.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { input.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        var isConsumed = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if isConsumed {
+                status.pointee = .endOfStream
+                return nil
+            }
+            isConsumed = true
+            status.pointee = .haveData
+            return input
+        }
+        guard error == nil else { return samples }
+        return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
+    }
+
     /// Offline time-stretch and pitch shift; tempo changes keep the original pitch.
     static func process(_ samples: [Float], sampleRate: Int, rate: Float, pitchCents: Float) throws -> [Float] {
         guard rate != 1 || pitchCents != 0, !samples.isEmpty else { return samples }

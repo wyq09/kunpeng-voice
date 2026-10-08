@@ -18,7 +18,7 @@ final class CosyVoiceBackend: CloneBackend {
 
     func generate(
         text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
-        faithful: Bool
+        faithful: Bool, previous _: SpokenChunk?
     ) async throws -> [Float] {
         let profile = try profile(for: sampleURL, referenceText: referenceText)
         // Instructions use CosyVoice's instruct2 layout, which hides the reference speech from the LLM.

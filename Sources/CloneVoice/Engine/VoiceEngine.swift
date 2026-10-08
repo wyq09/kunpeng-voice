@@ -64,6 +64,7 @@ final class VoiceEngine {
 
         var output: [Float] = []
         var sampleRate = 24_000
+        var previous: (chunk: SpokenChunk, style: SpeechStyle)?
         for (index, job) in jobs.enumerated() {
             try Task.checkCancellation()
             onProgress(index + 1, jobs.count)
@@ -72,9 +73,11 @@ final class VoiceEngine {
                 sampleURL: sampleURL,
                 referenceText: referenceText,
                 language: language,
-                style: job.style
+                style: job.style,
+                previous: previous?.style == job.style ? previous?.chunk : nil
             )
             sampleRate = result.sampleRate
+            previous = (SpokenChunk(samples: result.samples, text: job.text), job.style)
             let prosody = job.style.prosody
             let followedInstruction = usesInstruction && !result.isFaithfulFallback
             let shaped = try AudioEffects.process(
@@ -96,10 +99,17 @@ protocol CloneBackend: AnyObject {
     var sampleRate: Int { get }
     /// `faithful` trades style control for voice fidelity: style instructions can pull the
     /// model away from the reference speaker, so retries after a voice drift drop them.
+    /// `previous` is the chunk spoken just before in the same style, for backends that can continue from it.
     func generate(
         text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
-        faithful: Bool
+        faithful: Bool, previous: SpokenChunk?
     ) async throws -> [Float]
+}
+
+/// Raw model output for one chunk, at the backend's sample rate.
+struct SpokenChunk {
+    let samples: [Float]
+    let text: String
 }
 
 /// Owns the non-Sendable model so it is only ever touched from one executor.
@@ -133,14 +143,15 @@ actor SynthesisWorker {
         sampleURL: URL,
         referenceText: String,
         language: VoiceLanguage,
-        style: SpeechStyle
+        style: SpeechStyle,
+        previous: SpokenChunk?
     ) async throws -> (samples: [Float], sampleRate: Int, isFaithfulFallback: Bool) {
         guard let backend else { throw EngineError.notReady }
         let rate = backend.sampleRate
         func take(faithful: Bool) async throws -> [Float] {
             let samples = try await backend.generate(
                 text: text, sampleURL: sampleURL, referenceText: referenceText,
-                language: language, style: style, faithful: faithful)
+                language: language, style: style, faithful: faithful, previous: previous)
             releaseGPUMemory()
             return samples
         }

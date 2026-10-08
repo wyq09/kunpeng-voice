@@ -20,7 +20,7 @@ final class Qwen3Backend: CloneBackend {
     /// The language is pinned per voice: guessing it per sentence makes the accent drift.
     func generate(
         text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
-        faithful: Bool
+        faithful: Bool, previous _: SpokenChunk?
     ) async throws -> [Float] {
         let (_, refAudio) = try loadAudioArray(from: sampleURL, sampleRate: model.sampleRate)
         var parameters = model.defaultGenerationParameters

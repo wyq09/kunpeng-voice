@@ -28,7 +28,7 @@ struct ModelSpec: Identifiable, Hashable {
         switch family {
         case .qwen3: 120
         case .cosyVoice: 60
-        case .voxCPM2, .voxCPM15: 80
+        case .voxCPM2, .voxCPM15: 150
         }
     }
 }
