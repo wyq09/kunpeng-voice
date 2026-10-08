@@ -27,6 +27,9 @@ struct Clip: Identifiable, Codable, Hashable {
     let fileName: String
     var style: SpeechStyle?
     var speed: SpeechSpeed?
+    var modelName: String?
+    /// Wall-clock time the synthesis took.
+    var generationSeconds: TimeInterval?
 
     var deliveryText: String? {
         guard let style, let speed else { return nil }

@@ -16,6 +16,7 @@ final class VoiceEngine {
     private(set) var loadedSpec: ModelSpec?
     private let worker = SynthesisWorker()
     private var loadTask: Task<Void, Never>?
+    private var polishedParagraphs: [String: [String]] = [:]
 
     var isReady: Bool { phase == .ready }
 
@@ -44,8 +45,9 @@ final class VoiceEngine {
         Task { await worker.unload() }
     }
 
-    /// Returns mono float samples and their sample rate.
+    /// Returns mono float samples, their sample rate, and a notice when smart phrasing was skipped.
     /// `text` may contain inline tags like `[生气]`; each tagged part is spoken in its own style.
+    /// `onProgress(0, 0)` means the script is still being phrased.
     func synthesize(
         text: String,
         sampleURL: URL,
@@ -54,12 +56,10 @@ final class VoiceEngine {
         style: SpeechStyle = .natural,
         speed: SpeechSpeed = .normal,
         onProgress: @escaping @MainActor (Int, Int) -> Void
-    ) async throws -> (samples: [Float], sampleRate: Int) {
+    ) async throws -> (samples: [Float], sampleRate: Int, notice: String?) {
         guard let spec = loadedSpec else { throw EngineError.notReady }
         let usesInstruction = spec.supportsEmotionInstruction
-        let jobs = StyledScript(text, defaultStyle: style).segments.flatMap { segment in
-            TextChunker.split(segment.text, maxLength: spec.chunkLength).map { (style: segment.style, text: $0) }
-        }
+        let (jobs, notice) = try await phrase(text, style: style, maxLength: spec.chunkLength, onProgress: onProgress)
         guard !jobs.isEmpty else { throw EngineError.emptyText }
 
         var output: [Float] = []
@@ -80,18 +80,76 @@ final class VoiceEngine {
             previous = (SpokenChunk(samples: result.samples, text: job.text), job.style)
             let prosody = job.style.prosody
             let followedInstruction = usesInstruction && !result.isFaithfulFallback
-            let shaped = try AudioEffects.process(
+            output += try AudioEffects.process(
                 result.samples,
                 sampleRate: sampleRate,
                 rate: (followedInstruction ? 1 : prosody.tempo) * speed.rate,
                 pitchCents: followedInstruction ? 0 : prosody.pitchCents
             )
-            if !output.isEmpty {
-                output += [Float](repeating: 0, count: Int(Double(sampleRate) * prosody.pause))
+            if index < jobs.count - 1 {
+                let pause = job.boundary.pause(base: prosody.pause) / Double(speed.rate)
+                output += [Float](repeating: 0, count: Int(Double(sampleRate) * pause))
             }
-            output += shaped
         }
-        return (AudioEffects.normalized(output), sampleRate)
+        return (AudioEffects.normalized(output), sampleRate, notice)
+    }
+
+    private struct Job {
+        let style: SpeechStyle
+        let text: String
+        let boundary: TextChunker.Boundary
+    }
+
+    /// Splits the script into spoken phrases, asking the configured language model for natural
+    /// breaks when available and falling back to punctuation rules per paragraph.
+    private func phrase(
+        _ text: String, style: SpeechStyle, maxLength: Int, onProgress: @MainActor (Int, Int) -> Void
+    ) async throws -> (jobs: [Job], notice: String?) {
+        let segments = StyledScript(text, defaultStyle: style).segments.map {
+            (style: $0.style, paragraphs: TextChunker.paragraphs($0.text))
+        }
+        let config = PolisherConfig.load()
+        var notice: String?
+        if config.isUsable {
+            onProgress(0, 0)
+            let pending = Set(segments.flatMap(\.paragraphs)).filter {
+                polishedParagraphs[cacheKey($0, maxLength, config)] == nil
+            }
+            let results = await withTaskGroup(of: (String, Result<[String], Error>).self) { group in
+                for paragraph in pending {
+                    group.addTask {
+                        do { return (paragraph, .success(try await ScriptPolisher.lines(for: paragraph, maxLength: maxLength, config: config))) }
+                        catch { return (paragraph, .failure(error)) }
+                    }
+                }
+                return await group.reduce(into: []) { $0.append($1) }
+            }
+            try Task.checkCancellation()
+            for (paragraph, result) in results {
+                switch result {
+                case .success(let lines): polishedParagraphs[cacheKey(paragraph, maxLength, config)] = lines
+                case .failure(let error): notice = "智能断句没成功（\(error.localizedDescription)），已按标点断句"
+                }
+            }
+        }
+
+        var jobs: [Job] = []
+        for segment in segments {
+            for paragraph in segment.paragraphs {
+                // The model contributes punctuation; packing by that punctuation keeps chunk sizes even.
+                let punctuated = config.isUsable ? polishedParagraphs[cacheKey(paragraph, maxLength, config)]?.joined() : nil
+                let phrases = TextChunker.split(punctuated ?? paragraph, maxLength: maxLength)
+                for (index, phrase) in phrases.enumerated() {
+                    let boundary = index == phrases.count - 1 ? .paragraph : TextChunker.Boundary(after: phrase)
+                    jobs.append(Job(style: segment.style, text: phrase, boundary: boundary))
+                }
+            }
+        }
+        return (jobs, notice)
+    }
+
+    private func cacheKey(_ paragraph: String, _ maxLength: Int, _ config: PolisherConfig) -> String {
+        "\(config.baseURL)|\(config.model)|\(config.prompt)|\(maxLength)|\(paragraph)"
     }
 }
 
@@ -116,10 +174,17 @@ struct SpokenChunk {
 actor SynthesisWorker {
     /// Beyond this a chunk no longer sounds like the same person (male ≈ 100 Hz, female ≈ 200 Hz).
     private static let maxPitchDrift: Float = 4
+    /// Speaking this much faster or slower than the reference sounds rushed or dragged.
+    private static let maxRateRatio: Double = 1.45
     private static let faithfulRetries = 2
 
     private var backend: CloneBackend?
-    private var referencePitch: (url: URL, pitch: Float?)?
+    private var reference: (url: URL, text: String, profile: SpeakerProfile?)?
+
+    private struct SpeakerProfile {
+        let pitch: Float?
+        let syllablesPerSecond: Double?
+    }
 
     func load(_ spec: ModelSpec, from directory: URL) async throws {
         backend = nil
@@ -136,7 +201,7 @@ actor SynthesisWorker {
         releaseGPUMemory()
     }
 
-    /// Generates a chunk and regenerates it in faithful mode if its pitch strays from the
+    /// Generates a chunk and regenerates it in faithful mode if its pitch or pace strays from the
     /// reference speaker, keeping whichever take sounds closest to the cloned voice.
     func generateMatchingVoice(
         text: String,
@@ -155,29 +220,44 @@ actor SynthesisWorker {
             releaseGPUMemory()
             return samples
         }
-        func drift(_ samples: [Float], from reference: Float) -> Float {
-            VoicePitch.median(of: samples, sampleRate: rate).map { VoicePitch.semitones($0, from: reference) } ?? 0
+
+        let profile = speakerProfile(sampleURL, referenceText)
+        let syllables = VoicePitch.syllables(in: text)
+        /// 0 is a perfect match; above 1 the take no longer sounds like the reference.
+        func mismatch(_ samples: [Float]) -> Double {
+            var score = 0.0
+            if let pitch = profile.pitch, let heard = VoicePitch.median(of: samples, sampleRate: rate) {
+                score = Double(VoicePitch.semitones(heard, from: pitch) / Self.maxPitchDrift)
+            }
+            if syllables >= 8, let expected = profile.syllablesPerSecond,
+               let seconds = VoicePitch.speakingSeconds(of: samples, sampleRate: rate), seconds > 0 {
+                score = max(score, abs(log(syllables / seconds / expected)) / log(Self.maxRateRatio))
+            }
+            return score
         }
 
         var best = (samples: try await take(faithful: false), isFaithfulFallback: false)
-        guard let reference = pitch(ofReference: sampleURL) else { return (best.samples, rate, false) }
-        var bestDrift = drift(best.samples, from: reference)
-        for _ in 0..<Self.faithfulRetries where bestDrift > Self.maxPitchDrift {
+        var bestScore = mismatch(best.samples)
+        for _ in 0..<Self.faithfulRetries where bestScore > 1 {
             try Task.checkCancellation()
             let candidate = try await take(faithful: true)
-            let candidateDrift = drift(candidate, from: reference)
-            if candidateDrift < bestDrift { (best, bestDrift) = ((candidate, true), candidateDrift) }
+            let score = mismatch(candidate)
+            if score < bestScore { (best, bestScore) = ((candidate, true), score) }
         }
         return (best.samples, rate, best.isFaithfulFallback)
     }
 
-    private func pitch(ofReference url: URL) -> Float? {
-        if let referencePitch, referencePitch.url == url { return referencePitch.pitch }
-        let pitch = (try? MonoAudioLoader.load(url, sampleRate: 24_000)).flatMap {
-            VoicePitch.median(of: $0, sampleRate: 24_000)
-        }
-        referencePitch = (url, pitch)
-        return pitch
+    private func speakerProfile(_ url: URL, _ text: String) -> SpeakerProfile {
+        if let reference, reference.url == url, reference.text == text, let profile = reference.profile { return profile }
+        let samples = try? MonoAudioLoader.load(url, sampleRate: 24_000)
+        let seconds = samples.flatMap { VoicePitch.speakingSeconds(of: $0, sampleRate: 24_000) }
+        let syllables = VoicePitch.syllables(in: text)
+        let profile = SpeakerProfile(
+            pitch: samples.flatMap { VoicePitch.median(of: $0, sampleRate: 24_000) },
+            syllablesPerSecond: seconds.flatMap { $0 > 1 && syllables >= 8 ? syllables / $0 : nil }
+        )
+        reference = (url, text, profile)
+        return profile
     }
 }
 
@@ -194,30 +274,84 @@ enum EngineError: LocalizedError {
 }
 
 enum TextChunker {
-    /// Splits long text at sentence boundaries; the models stay more stable on short inputs.
-    static func split(_ text: String, maxLength: Int = 120) -> [String] {
-        let terminators: Set<Character> = ["。", "！", "？", "；", "!", "?", ";", "\n", "."]
-        var sentences: [String] = []
-        var current = ""
-        for character in text {
-            current.append(character)
-            if terminators.contains(character) {
-                sentences.append(current)
-                current = ""
+    /// How a phrase ends decides how long the silence after it is.
+    enum Boundary {
+        case clause, sentence, paragraph
+
+        init(after phrase: String) {
+            let ending = phrase.last { !TextChunker.closers.contains($0) }
+            self = ending.map { TextChunker.sentenceEnds.contains($0) } == true ? .sentence : .clause
+        }
+
+        func pause(base: Double) -> Double {
+            switch self {
+            case .clause: base * 0.5
+            case .sentence: base
+            case .paragraph: max(base * 2, 0.5)
             }
         }
-        sentences.append(current)
+    }
 
+    fileprivate static let sentenceEnds: Set<Character> = ["。", "！", "？", "；", "!", "?", ";", "…", "."]
+    private static let clauseEnds: Set<Character> = ["，", "、", "：", ",", ":", "—"]
+    fileprivate static let closers: Set<Character> = ["”", "’", "」", "』", "）", ")", "\"", "》"]
+
+    static func paragraphs(_ text: String) -> [String] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Packs whole sentences into chunks of at most `maxLength`; sentences that are too long on
+    /// their own are broken at commas, so a chunk never ends in the middle of a phrase.
+    static func split(_ text: String, maxLength: Int = 120) -> [String] {
+        let sentences = pieces(of: text, endingWith: sentenceEnds).flatMap { sentence in
+            sentence.count > maxLength ? pack(pieces(of: sentence, endingWith: clauseEnds), maxLength: maxLength) : [sentence]
+        }
+        return pack(sentences, maxLength: maxLength)
+    }
+
+    private static func pieces(of text: String, endingWith marks: Set<Character>) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        var isBreakPending = false
+        let characters = Array(text)
+        for (index, character) in characters.enumerated() {
+            current.append(character)
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            // "3.5" and "App.Store" are not sentence ends.
+            if marks.contains(character), character != "." || next == nil || next == " " { isBreakPending = true }
+            // Keep "。”" and "？！" together with the phrase they close.
+            if isBreakPending, !(next.map { marks.contains($0) || closers.contains($0) } ?? false) {
+                pieces.append(current)
+                current = ""
+                isBreakPending = false
+            }
+        }
+        pieces.append(current)
+        return pieces.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private static func pack(_ parts: [String], maxLength: Int) -> [String] {
         var chunks: [String] = []
         var buffer = ""
-        for sentence in sentences.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !sentence.isEmpty {
-            if !buffer.isEmpty, buffer.count + sentence.count > maxLength {
+        for part in parts {
+            if !buffer.isEmpty, buffer.count + part.count > maxLength {
                 chunks.append(buffer)
                 buffer = ""
             }
-            buffer += buffer.isEmpty ? sentence : " " + sentence
+            buffer += buffer.last?.isASCII == true && part.first?.isASCII == true ? " " + part : part
         }
         if !buffer.isEmpty { chunks.append(buffer) }
-        return chunks
+        return chunks.flatMap { $0.count > maxLength * 2 ? hardWrap($0, maxLength) : [$0] }
+    }
+
+    /// Last resort for runs without any punctuation.
+    private static func hardWrap(_ text: String, _ maxLength: Int) -> [String] {
+        stride(from: 0, to: text.count, by: maxLength).map { start in
+            let from = text.index(text.startIndex, offsetBy: start)
+            let to = text.index(from, offsetBy: min(maxLength, text.count - start))
+            return String(text[from..<to])
+        }
     }
 }

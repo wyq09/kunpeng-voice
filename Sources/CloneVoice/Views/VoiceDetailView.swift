@@ -8,6 +8,7 @@ struct VoiceDetailView: View {
     @Environment(VoiceEngine.self) private var engine
     @Environment(ModelManager.self) private var models
     @Environment(Player.self) private var player
+    @Environment(SmartPhrasing.self) private var phrasing
 
     let voiceID: Voice.ID
     var onDeleted: () -> Void
@@ -178,6 +179,13 @@ struct VoiceDetailView: View {
         HStack(spacing: 8) {
             scriptSummary
             Spacer(minLength: 8)
+            Button { phrasing.isPresented = true } label: {
+                Label(phrasing.summary, systemImage: phrasing.config.isUsable ? "text.word.spacing" : "text.alignleft")
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(phrasing.config.isUsable ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("生成前用大模型按朗读习惯断句，原文不改一个字")
             Menu {
                 ForEach(SpeechStyle.Group.allCases) { group in
                     Section(group.title) {
@@ -317,7 +325,9 @@ struct VoiceDetailView: View {
                     ProgressView().controlSize(.small)
                     TimelineView(.periodic(from: startedAt, by: 1)) { context in
                         let seconds = Int(context.date.timeIntervalSince(startedAt))
-                        Text(progress.total > 1 ? "第 \(progress.current)/\(progress.total) 段 · \(seconds) 秒" : "生成中 · \(seconds) 秒")
+                        Text(progress.current == 0 ? "智能断句中 · \(seconds) 秒"
+                            : progress.total > 1 ? "第 \(progress.current)/\(progress.total) 段 · \(seconds) 秒"
+                            : "生成中 · \(seconds) 秒")
                             .monospacedDigit()
                     }
                 }
@@ -350,9 +360,13 @@ struct VoiceDetailView: View {
         let input = trimmedText
         let style = style
         let speed = speed
-        startedAt = .now
+        let modelName = engine.loadedSpec?.name ?? models.activeSpec.name
+        let started = Date.now
+        startedAt = started
         progress = (1, 1)
         generation = Task {
+            let recorder = JobRecorder(source: .app, voiceName: voice.name, modelName: modelName, text: input)
+            recorder.modelReady(modelName)
             defer {
                 generation = nil
                 progress = nil
@@ -366,20 +380,31 @@ struct VoiceDetailView: View {
                     language: voice.primaryLanguage,
                     style: style,
                     speed: speed
-                ) { current, total in progress = (current, total) }
+                ) { current, total in
+                    progress = (current, total)
+                    recorder.progress(current, total)
+                }
                 try Task.checkCancellation()
 
                 let fileName = "\(UUID().uuidString).wav"
-                try AudioUtils.writeWavFile(samples: result.samples, sampleRate: result.sampleRate, fileURL: store.fileURL(fileName))
-                if let clip = store.addClip(to: voiceID, text: input, fileName: fileName, style: style, speed: speed) {
+                let url = store.fileURL(fileName)
+                try AudioUtils.writeWavFile(samples: result.samples, sampleRate: result.sampleRate, fileURL: url)
+                recorder.finish(output: url, duration: Double(result.samples.count) / Double(result.sampleRate), notice: result.notice)
+                errorMessage = result.notice
+                if let clip = store.addClip(
+                    to: voiceID, text: input, fileName: fileName, style: style, speed: speed,
+                    modelName: modelName, generationSeconds: Date.now.timeIntervalSince(started)
+                ) {
                     isHistoryExpanded = true
                     player.toggle(store.fileURL(clip.fileName))
                 }
             } catch is CancellationError {
-                return
+                recorder.fail(CancellationError())
             } catch let error as EngineError {
+                recorder.fail(error)
                 errorMessage = error.errorDescription
             } catch {
+                recorder.fail(error)
                 errorMessage = "生成失败，改短一点再试试"
             }
         }
@@ -453,6 +478,8 @@ private struct ClipRow: View {
             clip.createdAt.formatted(date: .omitted, time: .shortened),
             "\(Int(clip.duration.rounded())) 秒",
             clip.deliveryText,
+            clip.modelName,
+            clip.generationSeconds.map { "耗时 \(Int($0.rounded())) 秒" },
         ]
         .compactMap { $0 }
         .joined(separator: " · ")

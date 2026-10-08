@@ -108,7 +108,8 @@ final class MCPServer {
             voiceName: arguments["voice"] as? String,
             style: HeadlessSpeaker.style(named: arguments["style"] as? String),
             speed: HeadlessSpeaker.speed(named: arguments["speed"] as? String),
-            output: output
+            output: output,
+            source: .mcp
         )
         if arguments["play"] as? Bool == true { AudioPlayback.play(result.url) }
         return "已用「\(result.voiceName)」生成 \(String(format: "%.1f", result.duration)) 秒音频（\(result.modelName)）：\n\(result.url.path)"

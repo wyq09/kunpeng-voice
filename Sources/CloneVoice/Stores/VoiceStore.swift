@@ -74,7 +74,9 @@ final class VoiceStore {
         text: String,
         fileName: String,
         style: SpeechStyle,
-        speed: SpeechSpeed
+        speed: SpeechSpeed,
+        modelName: String? = nil,
+        generationSeconds: TimeInterval? = nil
     ) -> Clip? {
         guard let index = voices.firstIndex(where: { $0.id == voiceID }) else { return nil }
         let clip = Clip(
@@ -84,7 +86,9 @@ final class VoiceStore {
             duration: Self.duration(of: fileURL(fileName)),
             fileName: fileName,
             style: style,
-            speed: speed
+            speed: speed,
+            modelName: modelName,
+            generationSeconds: generationSeconds
         )
         voices[index].clips.insert(clip, at: 0)
         save()

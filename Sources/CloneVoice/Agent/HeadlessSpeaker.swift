@@ -70,30 +70,36 @@ final class HeadlessSpeaker {
         voiceName: String? = nil,
         style: SpeechStyle = .natural,
         speed: SpeechSpeed = .normal,
-        output: URL? = nil
+        output: URL? = nil,
+        source: GenerationJob.Source = .cli
     ) async throws -> Result {
         let voice = try voice(named: voiceName)
-        try await ensureModelLoaded()
+        let recorder = JobRecorder(source: source, voiceName: voice.name, modelName: models.activeSpec.name, text: text)
+        do {
+            try await ensureModelLoaded()
+            let modelName = engine.loadedSpec?.name ?? models.activeSpec.name
+            recorder.modelReady(modelName)
 
-        let result = try await engine.synthesize(
-            text: text,
-            sampleURL: store.fileURL(voice.sampleFileName),
-            referenceText: voice.referenceText,
-            language: voice.primaryLanguage,
-            style: style,
-            speed: speed
-        ) { _, _ in }
+            let result = try await engine.synthesize(
+                text: text,
+                sampleURL: store.fileURL(voice.sampleFileName),
+                referenceText: voice.referenceText,
+                language: voice.primaryLanguage,
+                style: style,
+                speed: speed
+            ) { recorder.progress($0, $1) }
 
-        let url = output ?? Self.defaultOutputURL(voice: voice.name, text: text)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? FileManager.default.removeItem(at: url)
-        try AudioUtils.writeWavFile(samples: result.samples, sampleRate: result.sampleRate, fileURL: url)
-        return Result(
-            url: url,
-            duration: Double(result.samples.count) / Double(result.sampleRate),
-            voiceName: voice.name,
-            modelName: engine.loadedSpec?.name ?? models.activeSpec.name
-        )
+            let url = output ?? Self.defaultOutputURL(voice: voice.name, text: text)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: url)
+            try AudioUtils.writeWavFile(samples: result.samples, sampleRate: result.sampleRate, fileURL: url)
+            let duration = Double(result.samples.count) / Double(result.sampleRate)
+            recorder.finish(output: url, duration: duration, notice: result.notice)
+            return Result(url: url, duration: duration, voiceName: voice.name, modelName: modelName)
+        } catch {
+            recorder.fail(error)
+            throw error
+        }
     }
 
     private func ensureModelLoaded() async throws {

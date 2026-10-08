@@ -1,5 +1,5 @@
 import Foundation
-import MLXRandom
+import MLX
 import VoxCPM2TTS
 
 /// Serves both VoxCPM 2 and VoxCPM 1.5; the checkpoint's config decides which architecture runs.

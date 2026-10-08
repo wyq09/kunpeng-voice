@@ -1,6 +1,7 @@
 import SwiftUI
 
 enum SidebarItem: Hashable {
+    case jobs
     case newVoice
     case voice(Voice.ID)
 }
@@ -10,6 +11,7 @@ struct RootView: View {
     @Environment(VoiceEngine.self) private var engine
     @Environment(ModelManager.self) private var models
     @Environment(AgentSetup.self) private var agentSetup
+    @Environment(SmartPhrasing.self) private var phrasing
     @State private var selection: SidebarItem?
 
     /// Changes whenever the model that should be in memory changes.
@@ -18,6 +20,7 @@ struct RootView: View {
     var body: some View {
         @Bindable var models = models
         @Bindable var agentSetup = agentSetup
+        @Bindable var phrasing = phrasing
         NavigationSplitView {
             Sidebar(selection: $selection)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
@@ -39,11 +42,14 @@ struct RootView: View {
         }
         .sheet(isPresented: $models.isPresented) { ModelManagerView() }
         .sheet(isPresented: $agentSetup.isPresented) { AgentSetupView() }
+        .sheet(isPresented: $phrasing.isPresented) { SmartPhrasingView() }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .jobs:
+            JobsView()
         case .voice(let id) where store.voice(id: id) != nil:
             VoiceDetailView(voiceID: id, onDeleted: { selection = store.voices.first.map { .voice($0.id) } ?? .newVoice })
                 .id(id)
@@ -60,6 +66,7 @@ struct RootView: View {
 private struct Sidebar: View {
     @Environment(VoiceStore.self) private var store
     @Environment(Player.self) private var player
+    @Environment(JobStore.self) private var jobs
     @Binding var selection: SidebarItem?
 
     @State private var renaming: Voice?
@@ -68,6 +75,11 @@ private struct Sidebar: View {
 
     var body: some View {
         List(selection: $selection) {
+            Label("生成任务", systemImage: "list.bullet.rectangle")
+                .badge(jobs.runningCount)
+                .padding(.vertical, 3)
+                .tag(SidebarItem.jobs)
+                .help("应用、MCP、命令行的所有生成，实时进度")
             Section("声音") {
                 ForEach(store.voices) { voice in
                     HStack(spacing: 10) {
