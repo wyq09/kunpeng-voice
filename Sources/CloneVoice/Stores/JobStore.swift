@@ -36,6 +36,14 @@ struct GenerationJob: Codable, Identifiable, Hashable {
     var message: String?
 
     var isRunning: Bool { [.loading, .phrasing, .generating].contains(status) }
+
+    var progressText: String {
+        switch status {
+        case .loading: "正在加载模型"
+        case .phrasing: "智能断句中"
+        default: total > 1 ? "第 \(current)/\(total) 段" : "生成中"
+        }
+    }
     var outputURL: URL? { outputPath.map(URL.init(fileURLWithPath:)) }
     var elapsed: TimeInterval? { finishedAt.map { $0.timeIntervalSince(startedAt) } }
 }

@@ -9,6 +9,8 @@ struct VoiceDetailView: View {
     @Environment(ModelManager.self) private var models
     @Environment(Player.self) private var player
     @Environment(SmartPhrasing.self) private var phrasing
+    @Environment(Generator.self) private var generator
+    @Environment(JobStore.self) private var jobs
 
     let voiceID: Voice.ID
     var onDeleted: () -> Void
@@ -20,37 +22,46 @@ struct VoiceDetailView: View {
     @State private var textSelection: TextSelection?
     @State private var name = ""
     @State private var isWaitingForModel = false
-    @State private var generation: Task<Void, Never>?
-    @State private var progress: (current: Int, total: Int)?
-    @State private var startedAt: Date?
-    @State private var errorMessage: String?
+    @State private var localError: String?
     @State private var isConfirmingDelete = false
     @State private var referenceDraft: String?
     @State private var isHistoryExpanded = true
+    @State private var isShowingJobs = false
     @FocusState private var isEditorFocused: Bool
 
     private var voice: Voice? { store.voice(id: voiceID) }
-    private var isBusy: Bool { generation != nil }
+    private var isBusy: Bool { generator.isGenerating(voiceID) }
+    private var progress: Generator.Active? { generator.active[voiceID] }
+    private var errorMessage: String? { localError ?? generator.messages[voiceID] }
     private var trimmedText: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Generations of this voice still running in other processes (MCP, command line).
+    private var externalJobs: [GenerationJob] {
+        guard let voice else { return [] }
+        return jobs.jobs.filter { $0.isRunning && $0.source != .app && $0.voiceName == voice.name }
+    }
 
     var body: some View {
         if let voice {
             VStack(spacing: 0) {
                 header(voice)
                 editor
-                if !voice.clips.isEmpty { history(voice) }
+                history(voice)
                 Divider()
                 toolbar
             }
             .onAppear {
                 name = voice.name
+                text = generator.drafts[voiceID] ?? ""
+                generator.visibleVoiceID = voiceID
                 isEditorFocused = true
             }
             .onDisappear {
                 store.rename(voiceID, to: name)
-                generation?.cancel()
+                if generator.visibleVoiceID == voiceID { generator.visibleVoiceID = nil }
                 player.stop()
             }
+            .onChange(of: text) { _, newText in generator.drafts[voiceID] = newText }
+            .sheet(isPresented: $isShowingJobs) { JobsSheet() }
             .onChange(of: voice.name) { _, newName in name = newName }
             .onChange(of: engine.isReady) { _, isReady in
                 if isReady, isWaitingForModel { startGeneration() }
@@ -239,27 +250,30 @@ struct VoiceDetailView: View {
     private func history(_ voice: Voice) -> some View {
         VStack(spacing: 0) {
             Divider()
-            Button {
-                withAnimation(.snappy(duration: 0.2)) { isHistoryExpanded.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .rotationEffect(.degrees(isHistoryExpanded ? 90 : 0))
-                    Text("生成记录 \(voice.clips.count)")
-                    Spacer()
+            if !voice.clips.isEmpty || !externalJobs.isEmpty {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { isHistoryExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(isHistoryExpanded ? 90 : 0))
+                        Text("生成记录 \(voice.clips.count)")
+                        Spacer()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
-            if isHistoryExpanded {
+            if isHistoryExpanded, !voice.clips.isEmpty || !externalJobs.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        ForEach(externalJobs) { RunningJobRow(job: $0) }
                         ForEach(voice.clips) { clip in
                             ClipRow(clip: clip, url: store.fileURL(clip.fileName)) {
                                 store.deleteClip(clip.id, from: voiceID)
@@ -274,7 +288,32 @@ struct VoiceDetailView: View {
                 }
                 .frame(maxHeight: 190)
             }
+            jobsEntry
         }
+    }
+
+    /// Everything generated by any voice, app or agent, one click below this voice's history.
+    private var jobsEntry: some View {
+        Button { isShowingJobs = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "list.bullet.rectangle")
+                Text("全部生成任务")
+                Text("含 MCP、命令行").foregroundStyle(.tertiary)
+                Spacer()
+                if jobs.runningCount > 0 {
+                    ProgressView().controlSize(.mini)
+                    Text("\(jobs.runningCount) 条进行中")
+                }
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("所有声音的生成进度、模型和耗时")
     }
 
     private var toolbar: some View {
@@ -320,12 +359,12 @@ struct VoiceDetailView: View {
             } else if isWaitingForModel {
                 Label("模型准备好后自动生成", systemImage: "hourglass")
                     .foregroundStyle(.secondary)
-            } else if let progress, let startedAt {
+            } else if let progress {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                        let seconds = Int(context.date.timeIntervalSince(startedAt))
-                        Text(progress.current == 0 ? "智能断句中 · \(seconds) 秒"
+                    TimelineView(.periodic(from: progress.startedAt, by: 1)) { context in
+                        let seconds = Int(context.date.timeIntervalSince(progress.startedAt))
+                        Text(progress.isPhrasing ? "智能断句中 · \(seconds) 秒"
                             : progress.total > 1 ? "第 \(progress.current)/\(progress.total) 段 · \(seconds) 秒"
                             : "生成中 · \(seconds) 秒")
                             .monospacedDigit()
@@ -343,8 +382,9 @@ struct VoiceDetailView: View {
     // MARK: - Actions
 
     private func startGeneration() {
-        guard !trimmedText.isEmpty, generation == nil, let voice else { return }
-        errorMessage = nil
+        guard !trimmedText.isEmpty, !isBusy, let voice else { return }
+        localError = nil
+        generator.messages[voiceID] = nil
         guard engine.isReady else {
             isWaitingForModel = true
             if !models.isActiveDownloaded {
@@ -356,58 +396,8 @@ struct VoiceDetailView: View {
         }
         isWaitingForModel = false
         player.stop()
-
-        let input = trimmedText
-        let style = style
-        let speed = speed
-        let modelName = engine.loadedSpec?.name ?? models.activeSpec.name
-        let started = Date.now
-        startedAt = started
-        progress = (1, 1)
-        generation = Task {
-            let recorder = JobRecorder(source: .app, voiceName: voice.name, modelName: modelName, text: input)
-            recorder.modelReady(modelName)
-            defer {
-                generation = nil
-                progress = nil
-                startedAt = nil
-            }
-            do {
-                let result = try await engine.synthesize(
-                    text: input,
-                    sampleURL: store.fileURL(voice.sampleFileName),
-                    referenceText: voice.referenceText,
-                    language: voice.primaryLanguage,
-                    style: style,
-                    speed: speed
-                ) { current, total in
-                    progress = (current, total)
-                    recorder.progress(current, total)
-                }
-                try Task.checkCancellation()
-
-                let fileName = "\(UUID().uuidString).wav"
-                let url = store.fileURL(fileName)
-                try AudioUtils.writeWavFile(samples: result.samples, sampleRate: result.sampleRate, fileURL: url)
-                recorder.finish(output: url, duration: Double(result.samples.count) / Double(result.sampleRate), notice: result.notice)
-                errorMessage = result.notice
-                if let clip = store.addClip(
-                    to: voiceID, text: input, fileName: fileName, style: style, speed: speed,
-                    modelName: modelName, generationSeconds: Date.now.timeIntervalSince(started)
-                ) {
-                    isHistoryExpanded = true
-                    player.toggle(store.fileURL(clip.fileName))
-                }
-            } catch is CancellationError {
-                recorder.fail(CancellationError())
-            } catch let error as EngineError {
-                recorder.fail(error)
-                errorMessage = error.errorDescription
-            } catch {
-                recorder.fail(error)
-                errorMessage = "生成失败，改短一点再试试"
-            }
-        }
+        isHistoryExpanded = true
+        generator.start(trimmedText, for: voice, style: style, speed: speed, store: store, engine: engine, player: player)
     }
 
     private func recognizeReference(_ voice: Voice) {
@@ -416,14 +406,13 @@ struct VoiceDetailView: View {
                 let heard = try await Transcriber.transcribe(store.fileURL(voice.sampleFileName))
                 referenceDraft = heard
             } catch {
-                errorMessage = error.localizedDescription
+                localError = error.localizedDescription
             }
         }
     }
 
     private func cancelGeneration() {
-        generation?.cancel()
-        generation = nil
+        generator.cancel(voiceID)
         isWaitingForModel = false
     }
 }

@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 /// Every generation from the app, MCP and the command line, with live progress.
-struct JobsView: View {
+struct JobsSheet: View {
     @Environment(JobStore.self) private var jobs
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,6 +20,8 @@ struct JobsView: View {
                         .font(.caption)
                         .help("只删记录，不删音频文件")
                 }
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 20)
             .padding(.top, 18)
@@ -43,6 +46,7 @@ struct JobsView: View {
                 }
             }
         }
+        .frame(width: 720, height: 560)
     }
 
     private var subtitle: String {
@@ -132,7 +136,7 @@ private struct JobRow: View {
                             .controlSize(.small)
                             .frame(maxWidth: 320)
                     }
-                    Text("\(runningText) · 已用 \(seconds) 秒")
+                    Text("\(job.progressText) · 已用 \(seconds) 秒")
                         .monospacedDigit()
                 }
             }
@@ -149,14 +153,6 @@ private struct JobRow: View {
         }
     }
 
-    private var runningText: String {
-        switch job.status {
-        case .loading: "正在加载模型"
-        case .phrasing: "智能断句中"
-        default: job.total > 1 ? "第 \(job.current)/\(job.total) 段" : "生成中"
-        }
-    }
-
     private var doneText: String {
         [
             job.audioDuration.map { "音频 \(Int($0.rounded())) 秒" },
@@ -165,6 +161,30 @@ private struct JobRow: View {
         ]
         .compactMap { $0 }
         .joined(separator: " · ")
+    }
+}
+
+/// An agent's generation of this voice, shown in the voice's history while it runs.
+struct RunningJobRow: View {
+    let job: GenerationJob
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small).frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(job.text).lineLimit(1)
+                TimelineView(.periodic(from: job.startedAt, by: 1)) { context in
+                    let seconds = Int(context.date.timeIntervalSince(job.startedAt))
+                    Text("\(job.source.title) · \(job.modelName) · \(job.progressText) · \(seconds) 秒")
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
     }
 }
 

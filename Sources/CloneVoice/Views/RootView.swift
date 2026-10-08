@@ -1,7 +1,6 @@
 import SwiftUI
 
 enum SidebarItem: Hashable {
-    case jobs
     case newVoice
     case voice(Voice.ID)
 }
@@ -48,8 +47,6 @@ struct RootView: View {
     @ViewBuilder
     private var detail: some View {
         switch selection {
-        case .jobs:
-            JobsView()
         case .voice(let id) where store.voice(id: id) != nil:
             VoiceDetailView(voiceID: id, onDeleted: { selection = store.voices.first.map { .voice($0.id) } ?? .newVoice })
                 .id(id)
@@ -67,6 +64,7 @@ private struct Sidebar: View {
     @Environment(VoiceStore.self) private var store
     @Environment(Player.self) private var player
     @Environment(JobStore.self) private var jobs
+    @Environment(Generator.self) private var generator
     @Binding var selection: SidebarItem?
 
     @State private var renaming: Voice?
@@ -75,11 +73,6 @@ private struct Sidebar: View {
 
     var body: some View {
         List(selection: $selection) {
-            Label("生成任务", systemImage: "list.bullet.rectangle")
-                .badge(jobs.runningCount)
-                .padding(.vertical, 3)
-                .tag(SidebarItem.jobs)
-                .help("应用、MCP、命令行的所有生成，实时进度")
             Section("声音") {
                 ForEach(store.voices) { voice in
                     HStack(spacing: 10) {
@@ -87,6 +80,10 @@ private struct Sidebar: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(voice.name).lineLimit(1)
                             Text(voice.subtitle).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        if generator.isGenerating(voice.id) || jobs.jobs.contains(where: { $0.isRunning && $0.voiceName == voice.name }) {
+                            ProgressView().controlSize(.mini).help("正在生成")
                         }
                     }
                     .padding(.vertical, 3)

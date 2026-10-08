@@ -21,6 +21,7 @@ struct CloneVoiceApp: App {
     @State private var agentSetup = AgentSetup()
     @State private var jobs = JobStore()
     @State private var phrasing = SmartPhrasing()
+    @State private var generator = Generator()
 
     var body: some Scene {
         WindowGroup("鲲鹏有声") {
@@ -32,6 +33,7 @@ struct CloneVoiceApp: App {
                 .environment(agentSetup)
                 .environment(jobs)
                 .environment(phrasing)
+                .environment(generator)
                 .frame(minWidth: 820, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)
