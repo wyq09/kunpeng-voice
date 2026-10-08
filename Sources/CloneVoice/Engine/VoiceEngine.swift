@@ -67,7 +67,7 @@ final class VoiceEngine {
         for (index, job) in jobs.enumerated() {
             try Task.checkCancellation()
             onProgress(index + 1, jobs.count)
-            let result = try await worker.generate(
+            let result = try await worker.generateMatchingVoice(
                 text: job.text,
                 sampleURL: sampleURL,
                 referenceText: referenceText,
@@ -76,11 +76,12 @@ final class VoiceEngine {
             )
             sampleRate = result.sampleRate
             let prosody = job.style.prosody
+            let followedInstruction = usesInstruction && !result.isFaithfulFallback
             let shaped = try AudioEffects.process(
                 result.samples,
                 sampleRate: sampleRate,
-                rate: (usesInstruction ? 1 : prosody.tempo) * speed.rate,
-                pitchCents: usesInstruction ? 0 : prosody.pitchCents
+                rate: (followedInstruction ? 1 : prosody.tempo) * speed.rate,
+                pitchCents: followedInstruction ? 0 : prosody.pitchCents
             )
             if !output.isEmpty {
                 output += [Float](repeating: 0, count: Int(Double(sampleRate) * prosody.pause))
@@ -93,14 +94,22 @@ final class VoiceEngine {
 
 protocol CloneBackend: AnyObject {
     var sampleRate: Int { get }
+    /// `faithful` trades style control for voice fidelity: style instructions can pull the
+    /// model away from the reference speaker, so retries after a voice drift drop them.
     func generate(
-        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle
+        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
+        faithful: Bool
     ) async throws -> [Float]
 }
 
 /// Owns the non-Sendable model so it is only ever touched from one executor.
 actor SynthesisWorker {
+    /// Beyond this a chunk no longer sounds like the same person (male ≈ 100 Hz, female ≈ 200 Hz).
+    private static let maxPitchDrift: Float = 4
+    private static let faithfulRetries = 2
+
     private var backend: CloneBackend?
+    private var referencePitch: (url: URL, pitch: Float?)?
 
     func load(_ spec: ModelSpec, from directory: URL) async throws {
         backend = nil
@@ -117,18 +126,47 @@ actor SynthesisWorker {
         releaseGPUMemory()
     }
 
-    func generate(
+    /// Generates a chunk and regenerates it in faithful mode if its pitch strays from the
+    /// reference speaker, keeping whichever take sounds closest to the cloned voice.
+    func generateMatchingVoice(
         text: String,
         sampleURL: URL,
         referenceText: String,
         language: VoiceLanguage,
         style: SpeechStyle
-    ) async throws -> (samples: [Float], sampleRate: Int) {
+    ) async throws -> (samples: [Float], sampleRate: Int, isFaithfulFallback: Bool) {
         guard let backend else { throw EngineError.notReady }
-        let samples = try await backend.generate(
-            text: text, sampleURL: sampleURL, referenceText: referenceText, language: language, style: style)
-        releaseGPUMemory()
-        return (samples, backend.sampleRate)
+        let rate = backend.sampleRate
+        func take(faithful: Bool) async throws -> [Float] {
+            let samples = try await backend.generate(
+                text: text, sampleURL: sampleURL, referenceText: referenceText,
+                language: language, style: style, faithful: faithful)
+            releaseGPUMemory()
+            return samples
+        }
+        func drift(_ samples: [Float], from reference: Float) -> Float {
+            VoicePitch.median(of: samples, sampleRate: rate).map { VoicePitch.semitones($0, from: reference) } ?? 0
+        }
+
+        var best = (samples: try await take(faithful: false), isFaithfulFallback: false)
+        guard let reference = pitch(ofReference: sampleURL) else { return (best.samples, rate, false) }
+        var bestDrift = drift(best.samples, from: reference)
+        for _ in 0..<Self.faithfulRetries where bestDrift > Self.maxPitchDrift {
+            try Task.checkCancellation()
+            let candidate = try await take(faithful: true)
+            let candidateDrift = drift(candidate, from: reference)
+            if candidateDrift < bestDrift { (best, bestDrift) = ((candidate, true), candidateDrift) }
+        }
+        return (best.samples, rate, best.isFaithfulFallback)
+    }
+
+    private func pitch(ofReference url: URL) -> Float? {
+        if let referencePitch, referencePitch.url == url { return referencePitch.pitch }
+        let pitch = (try? MonoAudioLoader.load(url, sampleRate: 24_000)).flatMap {
+            VoicePitch.median(of: $0, sampleRate: 24_000)
+        }
+        referencePitch = (url, pitch)
+        return pitch
     }
 }
 

@@ -22,7 +22,8 @@ final class VoxCPMBackend: CloneBackend {
     /// "controllable cloning" keeps the timbre from the reference and follows the instruction.
     /// VoxCPM 1.5 has no instruction support, so it always continues the prompt.
     func generate(
-        text: String, sampleURL: URL, referenceText: String, language _: VoiceLanguage, style: SpeechStyle
+        text: String, sampleURL: URL, referenceText: String, language _: VoiceLanguage, style: SpeechStyle,
+        faithful: Bool
     ) async throws -> [Float] {
         let reference = try reference(for: sampleURL)
         if isVersion1 {
@@ -33,7 +34,7 @@ final class VoxCPMBackend: CloneBackend {
                 streamingPrefixLen: 3
             )
         }
-        guard let instruction = style.styleDescription else {
+        guard !faithful, let instruction = style.styleDescription else {
             return try await model.generateVoxCPM2(
                 text: text,
                 refAudio: reference,

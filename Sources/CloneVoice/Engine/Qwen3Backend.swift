@@ -19,11 +19,12 @@ final class Qwen3Backend: CloneBackend {
     /// Clone mode ignores text instructions, so style only steers sampling here.
     /// The language is pinned per voice: guessing it per sentence makes the accent drift.
     func generate(
-        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle
+        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
+        faithful: Bool
     ) async throws -> [Float] {
         let (_, refAudio) = try loadAudioArray(from: sampleURL, sampleRate: model.sampleRate)
         var parameters = model.defaultGenerationParameters
-        parameters.temperature = style.prosody.temperature
+        parameters.temperature = faithful ? min(style.prosody.temperature, 0.6) : style.prosody.temperature
         let audio = try await model.generate(
             text: text,
             voice: nil,

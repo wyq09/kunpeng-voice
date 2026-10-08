@@ -17,10 +17,12 @@ final class CosyVoiceBackend: CloneBackend {
     }
 
     func generate(
-        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle
+        text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
+        faithful: Bool
     ) async throws -> [Float] {
         let profile = try profile(for: sampleURL, referenceText: referenceText)
-        guard let instruction = style.instruction else {
+        // Instructions use CosyVoice's instruct2 layout, which hides the reference speech from the LLM.
+        guard !faithful, let instruction = style.instruction else {
             return model.synthesize(text: text, voiceProfile: profile, language: language.rawValue)
         }
         return model.synthesize(text: text, voiceProfile: profile, language: language.rawValue, instruction: instruction)
