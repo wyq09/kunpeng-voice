@@ -66,7 +66,7 @@ struct AgentSetupView: View {
                 } label: {
                     Label("添加到 Cursor", systemImage: "plus.circle.fill")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kpPrimary)
             }
             Step(number: 2, title: "没反应？手动把下面的内容合并进 ~/.cursor/mcp.json") {
                 CodeBlock(Integration.mcpJSON)
@@ -92,13 +92,13 @@ struct AgentSetupView: View {
                     if let cliPath {
                         Label("已安装到 \(cliPath)", systemImage: "checkmark.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(.green)
+                            .foregroundStyle(Color.kpCyan)
                     }
                 }
                 if let cliPath, !CLIInstaller.isOnPath(cliPath) {
                     Text("这个目录不在 PATH 里，在终端运行下面一行后重开终端：")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.kpGold)
                     CodeBlock(CLIInstaller.pathFix(for: cliPath))
                 }
             }
@@ -156,7 +156,7 @@ private struct Step<Content: View>: View {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.white)
                 .frame(width: 20, height: 20)
-                .background(Color.accentColor, in: Circle())
+                .background(Color.kpCyan, in: Circle())
             VStack(alignment: .leading, spacing: 8) {
                 Text(title).fixedSize(horizontal: false, vertical: true)
                 content
@@ -196,7 +196,7 @@ private struct CodeBlock: View {
             .controlSize(.small)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+        .kpPanel(cornerRadius: 8)
     }
 }
 

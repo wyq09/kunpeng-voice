@@ -25,6 +25,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$PRODUCTS/CloneVoice" "$APP/Contents/MacOS/"
 cp Resources/Info.plist "$APP/Contents/"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+[[ -f Resources/AppIcon-1024.png ]] && cp Resources/AppIcon-1024.png "$APP/Contents/Resources/"
 for bundle in "$PRODUCTS"/*.bundle(N); do
   cp -R "$bundle" "$APP/Contents/Resources/"
 done

@@ -34,10 +34,10 @@ struct CloneVoiceApp: App {
                 .environment(jobs)
                 .environment(phrasing)
                 .environment(generator)
-                .frame(minWidth: 820, minHeight: 560)
+                .frame(minWidth: 860, minHeight: 680)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 960, height: 620)
+        .defaultSize(width: 1080, height: 760)
         .commands {
             CommandGroup(after: .appSettings) {
                 Button("模型管理…") { models.isPresented = true }
@@ -52,7 +52,9 @@ struct CloneVoiceApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        AppBrandIcon.installIfNeeded()
         NSApp.activate()
+        DebugSnapshot.scheduleIfRequested()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

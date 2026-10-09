@@ -93,7 +93,7 @@ private struct JobRow: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
-        .background(isHovered ? Color.primary.opacity(0.04) : .clear)
+        .background(isHovered ? Color.kpCyan.opacity(0.05) : .clear)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .contextMenu {
@@ -120,7 +120,7 @@ private struct JobRow: View {
         } else {
             Image(systemName: job.status == .cancelled ? "stop.circle" : "exclamationmark.circle")
                 .font(.system(size: 18))
-                .foregroundStyle(job.status == .cancelled ? Color.secondary : Color.orange)
+                .foregroundStyle(job.status == .cancelled ? Color.secondary : Color.kpGold)
         }
     }
 
@@ -145,9 +145,9 @@ private struct JobRow: View {
         case .done:
             Text(doneText)
                 .font(.caption)
-                .foregroundStyle(job.message == nil ? Color.secondary : Color.orange)
+                .foregroundStyle(job.message == nil ? Color.secondary : Color.kpGold)
         case .failed:
-            Text(job.message ?? "生成失败").font(.caption).foregroundStyle(.orange)
+            Text(job.message ?? "生成失败").font(.caption).foregroundStyle(Color.kpGold)
         case .cancelled:
             Text("已停止").font(.caption).foregroundStyle(.secondary)
         }
@@ -170,7 +170,7 @@ struct RunningJobRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ProgressView().controlSize(.small).frame(width: 26)
+            GeneratingWave().frame(width: 26, height: 14)
             VStack(alignment: .leading, spacing: 2) {
                 Text(job.text).lineLimit(1)
                 TimelineView(.periodic(from: job.startedAt, by: 1)) { context in

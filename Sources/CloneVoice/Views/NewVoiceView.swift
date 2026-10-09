@@ -24,25 +24,40 @@ struct NewVoiceView: View {
     @State private var notice: String?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                    .padding(.bottom, 20)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                        .padding(.bottom, 16)
 
-                if let sampleURL {
-                    review(sampleURL)
-                } else if mode == .record {
-                    recordStage
-                } else {
-                    uploadStage
+                    if let sampleURL {
+                        review(sampleURL)
+                    } else if mode == .record {
+                        recordStage
+                    } else {
+                        uploadStage
+                    }
                 }
-
-                footer
-                    .padding(.top, 36)
+                .frame(maxWidth: 420)
+                .padding(.top, 8)
+                .padding(.bottom, 16)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 420)
-            .padding(.vertical, 56)
-            .frame(maxWidth: .infinity)
+
+            footer
+                .padding(.horizontal, 4)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
+                .frame(maxWidth: 420)
+                .frame(maxWidth: .infinity)
+                .background {
+                    LinearGradient(
+                        colors: [Color.kpBackground.opacity(0), Color.kpBackground.opacity(0.92)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
+                }
         }
         .onDisappear {
             recorder.stop()
@@ -56,10 +71,16 @@ struct NewVoiceView: View {
     // MARK: - Sections
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("新建声音").font(.system(size: 22, weight: .semibold))
-            Text(subtitle).foregroundStyle(.secondary)
+        VStack(spacing: 6) {
+            KunpengParticles(energy: recorder.isRecording ? recorder.level : 0)
+                .frame(width: 176, height: 176)
+            .help("移动鼠标拨动羽翼，点击让鲲鹏发声")
+            Text("创建声音")
+                .font(.system(size: 24, weight: .bold))
+                .foregroundStyle(.kpTitle)
+            Text(subtitle).foregroundStyle(Color.kpMuted)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var subtitle: String {
@@ -80,23 +101,29 @@ struct NewVoiceView: View {
             RecordButton(isRecording: recorder.isRecording, level: recorder.level) {
                 toggleRecording()
             }
-            .padding(.top, 28)
+            .padding(.top, 24)
             .disabled(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            LevelWave(level: recorder.level, isActive: recorder.isRecording)
+                .frame(width: 240, height: 34)
+                .padding(.top, 10)
+                .opacity(recorder.isRecording ? 1 : 0.35)
 
             Text(Self.format(recorder.elapsed))
                 .font(.system(size: 26, weight: .light, design: .rounded))
                 .monospacedDigit()
-                .padding(.top, 12)
+                .padding(.top, 6)
 
-            ProgressView(value: min(recorder.elapsed / Recorder.targetDuration, 1))
-                .progressViewStyle(.linear)
-                .tint(recorder.elapsed >= Recorder.targetDuration ? .green : .accentColor)
-                .frame(width: 140)
-                .padding(.top, 8)
+            KPProgressBar(
+                value: recorder.elapsed / Recorder.targetDuration,
+                isComplete: recorder.elapsed >= Recorder.targetDuration
+            )
+            .frame(width: 160)
+            .padding(.top, 8)
 
             Text(recordHint)
                 .font(.caption)
-                .foregroundStyle(notice == nil ? .secondary : Color.orange)
+                .foregroundStyle(notice == nil ? Color.kpMuted : Color.kpGold)
                 .padding(.top, 10)
         }
     }
@@ -113,12 +140,12 @@ struct NewVoiceView: View {
     private var promptCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("朗读内容").font(.caption).foregroundStyle(.secondary)
+                Label("朗读内容", systemImage: "text.quote").font(.caption).foregroundStyle(Color.kpMuted)
                 Spacer()
                 Button("换一段", action: nextPrompt)
                     .buttonStyle(.plain)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Color.kpCyan)
                     .disabled(recorder.isRecording)
             }
             TextField("", text: $promptText, axis: .vertical)
@@ -127,8 +154,9 @@ struct NewVoiceView: View {
                 .lineSpacing(6)
                 .disabled(recorder.isRecording)
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+        .kpPanel(cornerRadius: 14, isHighlighted: recorder.isRecording)
+        .animation(.easeOut(duration: 0.3), value: recorder.isRecording)
     }
 
     private var uploadStage: some View {
@@ -139,23 +167,30 @@ struct NewVoiceView: View {
                     Text("正在识别音频里说的话…").foregroundStyle(.secondary)
                 } else {
                     Image(systemName: "waveform.badge.plus")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 30))
+                        .foregroundStyle(.kpPrimary)
+                        .shadow(color: .kpCyan.opacity(0.5), radius: 8)
                     Text("拖入音频文件，或点击选择").foregroundStyle(.primary)
                     Text("支持 WAV、MP3、M4A，超出 15 秒只取开头")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
                 if let notice {
-                    Text(notice).font(.caption).foregroundStyle(.orange)
+                    Text(notice).font(.caption).foregroundStyle(Color.kpGold)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 180)
             .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
-                    .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.4))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.kpCyan.opacity(isDropTargeted ? 0.1 : 0.03))
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                    .foregroundStyle(isDropTargeted ? Color.kpCyan : Color.kpLineStrong)
+            )
+            .shadow(color: .kpCyan.opacity(isDropTargeted ? 0.3 : 0), radius: 16)
+            .animation(.easeOut(duration: 0.2), value: isDropTargeted)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -176,37 +211,36 @@ struct NewVoiceView: View {
                     Text("你的声音样本")
                     Text("\(Int(VoiceStore.duration(of: url).rounded())) 秒")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kpMuted)
                 }
-                Spacer()
+                ClipWaveform(url: url).frame(height: 28)
                 Button(mode == .record ? "重录" : "换一个文件", action: resetSample)
-                    .buttonStyle(.link)
+                    .buttonStyle(.kpGhost)
             }
             .padding(14)
-            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .kpPanel(cornerRadius: 14, isHighlighted: player.isPlaying(url))
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("音频里说的话").font(.caption).foregroundStyle(.secondary)
+                Text("音频里说的话").font(.caption).foregroundStyle(Color.kpMuted)
                 TextField("请填写音频里说的每一个字", text: $referenceText, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.kp)
                     .disabled(isTranscribing)
                 Text(notice ?? (isTranscribing ? "正在核对你实际说的话…" : "已按录音自动识别，和录音一字不差时克隆最像，有错字改一下。"))
                     .font(.caption)
-                    .foregroundStyle(notice == nil ? Color.secondary : Color.orange)
+                    .foregroundStyle(notice == nil ? Color.kpMuted : Color.kpGold)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("名字").font(.caption).foregroundStyle(.secondary)
+                Text("名字").font(.caption).foregroundStyle(Color.kpMuted)
                 TextField("比如：我自己", text: $name)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.kp)
                     .onSubmit(save)
             }
 
             Button(action: save) {
                 Text("保存声音").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(.kpPrimaryLarge)
             .keyboardShortcut(.defaultAction)
             .disabled(!canSave)
         }
@@ -219,7 +253,7 @@ struct NewVoiceView: View {
                     notice = nil
                     mode = mode == .record ? .upload : .record
                 }
-                .buttonStyle(.link)
+                .buttonStyle(.plain).foregroundStyle(Color.kpCyan)
             }
             Spacer()
             if let onCancel {
@@ -227,7 +261,7 @@ struct NewVoiceView: View {
                     recorder.discard()
                     onCancel()
                 }
-                .buttonStyle(.link)
+                .buttonStyle(.plain).foregroundStyle(Color.kpCyan)
             }
         }
         .font(.callout)
@@ -349,45 +383,60 @@ private struct RecordButton: View {
     var level: Double
     var action: () -> Void
 
+    @State private var isHovered = false
+
     var body: some View {
         Button(action: action) {
             ZStack {
+                if isRecording {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                        let t = timeline.date.timeIntervalSinceReferenceDate
+                        ZStack {
+                            ForEach(0..<3, id: \.self) { ring in
+                                let progress = (t * 0.6 + Double(ring) / 3).truncatingRemainder(dividingBy: 1)
+                                Circle()
+                                    .stroke(ring == 1 ? Color.kpGold : .kpCoral, lineWidth: 1.2)
+                                    .frame(width: 64, height: 64)
+                                    .scaleEffect(1 + progress * (0.7 + level * 0.9))
+                                    .opacity((1 - progress) * 0.7)
+                            }
+                        }
+                    }
+                }
                 Circle()
-                    .stroke(Color.red.opacity(isRecording ? 0.25 : 0.12), lineWidth: 4)
-                    .frame(width: 64, height: 64)
-                    .scaleEffect(isRecording ? 1 + level * 0.35 : 1)
+                    .fill(RadialGradient(
+                        colors: [(isRecording ? Color.kpCoral : .kpCyan).opacity(0.35), .clear],
+                        center: .center, startRadius: 20, endRadius: 50
+                    ))
+                    .frame(width: 100, height: 100)
+                    .scaleEffect(isRecording ? 1 + level * 0.35 : (isHovered ? 1.08 : 1))
                     .animation(.easeOut(duration: 0.08), value: level)
                 Circle()
-                    .fill(.background)
-                    .frame(width: 60, height: 60)
-                    .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
-                RoundedRectangle(cornerRadius: isRecording ? 6 : 22)
-                    .fill(Color.red)
+                    .fill(Color.kpBackground2)
+                    .frame(width: 64, height: 64)
+                    .overlay(Circle().strokeBorder(
+                        AngularGradient(colors: [.kpCyan, .kpGold, .kpTeal, .kpCyan], center: .center),
+                        lineWidth: 1.5
+                    ))
+                    .shadow(color: .kpCyan.opacity(0.35), radius: 10)
+                RoundedRectangle(cornerRadius: isRecording ? 6 : 22, style: .continuous)
+                    .fill(isRecording
+                        ? AnyShapeStyle(LinearGradient(colors: [Color(red: 1, green: 0.55, blue: 0.5), .kpCoral], startPoint: .top, endPoint: .bottom))
+                        : AnyShapeStyle(.kpPrimary))
                     .frame(width: isRecording ? 22 : 44, height: isRecording ? 22 : 44)
-                    .animation(.spring(duration: 0.25), value: isRecording)
+                    .overlay {
+                        if !isRecording {
+                            Image(systemName: "mic.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(Color.kpInk)
+                        }
+                    }
+                    .animation(.spring(duration: 0.3), value: isRecording)
             }
-            .frame(width: 88, height: 88)
+            .frame(width: 110, height: 110)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.2), value: isHovered)
         .help(isRecording ? "停止录音" : "开始录音")
-    }
-}
-
-struct PlayButton: View {
-    var isPlaying: Bool
-    var size: CGFloat = 32
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
-                .font(.system(size: size * 0.38, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(Color.accentColor, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .help(isPlaying ? "停止" : "播放")
     }
 }

@@ -127,7 +127,7 @@ struct SmartPhrasingView: View {
                 dismiss()
             }
             .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.kpPrimary)
         }
         .padding(16)
     }
@@ -144,10 +144,10 @@ struct SmartPhrasingView: View {
             ProgressView().controlSize(.small)
         case .passed(let seconds):
             Label(String(format: "可以用 · %.1f 秒", seconds), systemImage: "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.green)
+                .font(.caption).foregroundStyle(Color.kpCyan)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                .font(.caption).foregroundStyle(Color.kpGold).lineLimit(2)
         }
     }
 

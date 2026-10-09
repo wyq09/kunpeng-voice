@@ -65,7 +65,7 @@ struct ModelManagerView: View {
                 Text("模型共占用 \(ModelManager.format(models.totalModelBytes))")
                 if let free = ModelManager.freeDiskBytes {
                     Text("磁盘剩余 \(ModelManager.format(free))")
-                        .foregroundStyle(free < 3_000_000_000 ? Color.orange : Color.secondary)
+                        .foregroundStyle(free < 3_000_000_000 ? Color.kpGold : Color.secondary)
                 }
             }
             .font(.caption)
@@ -118,14 +118,14 @@ private struct ModelRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     Text(spec.name).font(.headline)
-                    if spec.isRecommended { Badge(text: "推荐", color: .accentColor) }
+                    if spec.isRecommended { Badge(text: "推荐", color: .kpCyan) }
                     if spec.supportsEmotionInstruction { Badge(text: "情绪指令", color: .purple) }
                 }
                 Text(spec.detail).font(.callout).foregroundStyle(.secondary)
                 if case .failed(let message) = status {
-                    Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    Text(message).font(.caption).foregroundStyle(Color.kpGold).fixedSize(horizontal: false, vertical: true)
                 } else if let note = models.downloadNotes[spec.id] {
-                    Text(note).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    Text(note).font(.caption).foregroundStyle(Color.kpGold).fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(sizeLine).font(.caption).foregroundStyle(.tertiary)
                 }
@@ -136,11 +136,11 @@ private struct ModelRow: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isActive && status == .downloaded ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.035))
+                .fill(isActive && status == .downloaded ? Color.kpCyan.opacity(0.08) : Color.kpPanel)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(isActive && status == .downloaded ? Color.accentColor.opacity(0.5) : .clear)
+                .strokeBorder(isActive && status == .downloaded ? Color.kpCyan.opacity(0.5) : .clear)
         )
     }
 
@@ -181,7 +181,7 @@ private struct ModelRow: View {
             HStack(spacing: 8) {
                 if isActive {
                     Label(engine.phase == .loading ? "加载中…" : "使用中", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Color.kpCyan)
                         .font(.callout)
                 } else {
                     Button("使用") { models.activate(spec) }

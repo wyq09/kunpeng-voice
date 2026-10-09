@@ -7,6 +7,8 @@ struct StylePicker: View {
     var isApproximate: Bool
     var onOpenModels: () -> Void
 
+    @Namespace private var indicator
+
     private var chips: [SpeechStyle] {
         SpeechStyle.featured.contains(selection) ? SpeechStyle.featured : SpeechStyle.featured + [selection]
     }
@@ -15,22 +17,20 @@ struct StylePicker: View {
         HStack(spacing: 6) {
             HStack(spacing: 2) {
                 ForEach(chips) { item in
-                    Button { selection = item } label: {
+                    Button { withAnimation(.snappy(duration: 0.22)) { selection = item } } label: {
                         Text(item.title)
                             .font(.callout)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 3)
                             .background {
                                 if item == selection {
-                                    RoundedRectangle(cornerRadius: 5)
-                                        .fill(.background)
-                                        .shadow(color: .black.opacity(0.12), radius: 1, y: 0.5)
+                                    KPChipHighlight().matchedGeometryEffect(id: "chip", in: indicator)
                                 }
                             }
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(item == selection ? .primary : .secondary)
+                    .foregroundStyle(item == selection ? Color.kpText : .kpMuted)
                 }
 
                 Menu {
@@ -49,14 +49,15 @@ struct StylePicker: View {
                         Button("当前模型的情绪为近似效果，换用 CosyVoice 3…", action: onOpenModels)
                     }
                 } label: {
-                    Text("更多").font(.callout)
+                    Text("更多").font(.callout).foregroundStyle(Color.kpMuted)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .padding(.horizontal, 6)
             }
             .padding(2)
-            .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 7))
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.kpLine))
             .help("说话的情绪和风格")
 
             if isApproximate {
@@ -64,7 +65,7 @@ struct StylePicker: View {
                     Image(systemName: "info.circle")
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kpGold)
                 .help("当前模型的情绪为近似效果。点此换用支持情绪指令的模型（CosyVoice 3 / VoxCPM）")
             }
         }

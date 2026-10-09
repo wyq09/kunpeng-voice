@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum SidebarItem: Hashable {
@@ -26,11 +27,13 @@ struct RootView: View {
         } detail: {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.background)
+                .background { AmbientBackground() }
         }
+        .kpWindowTheme()
         .onAppear {
             selection = store.voices.first.map { .voice($0.id) } ?? .newVoice
             models.downloadActiveIfNothingInstalled()
+            if ProcessInfo.processInfo.environment["KP_NEW"] != nil { selection = .newVoice }
         }
         .task(id: engineKey) {
             if models.isActiveDownloaded {
@@ -39,9 +42,9 @@ struct RootView: View {
                 engine.unload()
             }
         }
-        .sheet(isPresented: $models.isPresented) { ModelManagerView() }
-        .sheet(isPresented: $agentSetup.isPresented) { AgentSetupView() }
-        .sheet(isPresented: $phrasing.isPresented) { SmartPhrasingView() }
+        .sheet(isPresented: $models.isPresented) { ModelManagerView().kpSheet() }
+        .sheet(isPresented: $agentSetup.isPresented) { AgentSetupView().kpSheet() }
+        .sheet(isPresented: $phrasing.isPresented) { SmartPhrasingView().kpSheet() }
     }
 
     @ViewBuilder
@@ -72,41 +75,64 @@ private struct Sidebar: View {
     @State private var deleting: Voice?
 
     var body: some View {
-        List(selection: $selection) {
-            Section("声音") {
-                ForEach(store.voices) { voice in
-                    HStack(spacing: 10) {
-                        VoiceAvatar()
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(voice.name).lineLimit(1)
-                            Text(voice.subtitle).font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            header
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("声音")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.kpMuted.opacity(0.8))
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 2)
+                    ForEach(store.voices) { voice in
+                        SidebarRow(
+                            isSelected: selection == .voice(voice.id),
+                            action: { selection = .voice(voice.id) }
+                        ) {
+                            VoiceAvatar(name: voice.name)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(voice.name).lineLimit(1)
+                                Text(voice.subtitle).font(.caption).foregroundStyle(Color.kpMuted)
+                            }
+                            Spacer(minLength: 0)
+                            if generator.isGenerating(voice.id) || jobs.jobs.contains(where: { $0.isRunning && $0.voiceName == voice.name }) {
+                                GeneratingWave().frame(width: 26, height: 14).help("正在生成")
+                            }
                         }
-                        Spacer(minLength: 0)
-                        if generator.isGenerating(voice.id) || jobs.jobs.contains(where: { $0.isRunning && $0.voiceName == voice.name }) {
-                            ProgressView().controlSize(.mini).help("正在生成")
+                        .contextMenu {
+                            Button("重命名…") { startRenaming(voice) }
+                            Divider()
+                            Button("删除…", role: .destructive) { deleting = voice }
                         }
                     }
-                    .padding(.vertical, 3)
-                    .tag(SidebarItem.voice(voice.id))
-                    .contextMenu {
-                        Button("重命名…") { startRenaming(voice) }
-                        Divider()
-                        Button("删除…", role: .destructive) { deleting = voice }
+                    SidebarRow(isSelected: selection == .newVoice, action: { selection = .newVoice }) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.kpCyan)
+                            .frame(width: 28, height: 28)
+                            .background(Color.kpCyan.opacity(0.08), in: Circle())
+                            .overlay(Circle().strokeBorder(Color.kpCyan.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                        Text("创建声音").foregroundStyle(Color.kpMuted)
+                        Spacer(minLength: 0)
                     }
                 }
-                Label("新建声音", systemImage: "plus")
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 3)
-                    .tag(SidebarItem.newVoice)
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
             }
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .top) { header }
-        .safeAreaInset(edge: .bottom) {
+            .scrollIndicators(.never)
             VStack(spacing: 0) {
+                KPDivider().padding(.horizontal, 14)
                 AgentSetupButton()
                 ModelStatusView()
             }
+        }
+        .background {
+            ZStack {
+                Color.kpBackground2
+                LinearGradient(colors: [.kpTeal.opacity(0.12), .clear, .kpGold.opacity(0.04)], startPoint: .top, endPoint: .bottom)
+                HStack { Spacer(); Rectangle().fill(Color.kpLine).frame(width: 1) }
+            }
+            .ignoresSafeArea()
         }
         .alert("重命名声音", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("名字", text: $newName)
@@ -138,28 +164,65 @@ private struct Sidebar: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable()
-                .frame(width: 28, height: 28)
-            Text("鲲鹏有声").font(.headline)
+        HStack(spacing: 10) {
+            Group {
+                if let icon = AppBrandIcon.image() {
+                    Image(nsImage: icon)
+                        .resizable()
+                } else {
+                    Image(systemName: "waveform.circle.fill")
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.kpCyan, Color.kpTeal)
+                }
+            }
+            .frame(width: 32, height: 32)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .shadow(color: .kpCyan.opacity(0.4), radius: 8)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("鲲鹏有声")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.kpTitle)
+                Text("你的声音，读出一切")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.kpMuted)
+            }
             Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.bottom, 10)
     }
 }
 
-struct VoiceAvatar: View {
-    var size: CGFloat = 28
+/// Sidebar entry with a glowing cyan selection, replacing the system accent highlight.
+private struct SidebarRow<Content: View>: View {
+    var isSelected: Bool
+    var action: () -> Void
+    @ViewBuilder var content: Content
+    @State private var isHovered = false
 
     var body: some View {
-        Image(systemName: "waveform")
-            .font(.system(size: size * 0.4, weight: .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: size, height: size)
-            .background(.quaternary, in: Circle())
+        Button(action: action) {
+            HStack(spacing: 10) { content }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isSelected ? Color.kpCyan.opacity(0.14) : .white.opacity(isHovered ? 0.04 : 0))
+                }
+                .overlay {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.kpCyan.opacity(0.32))
+                            .shadow(color: .kpCyan.opacity(0.35), radius: 6)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.snappy(duration: 0.18), value: isSelected)
+        .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
 
@@ -175,9 +238,9 @@ private struct AgentSetupButton: View {
                 Text("MCP · 命令行").foregroundStyle(.tertiary)
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.kpMuted)
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.top, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -209,22 +272,22 @@ private struct ModelStatusView: View {
         let spec = models.activeSpec
         switch models.status(of: spec) {
         case .downloading(let fraction):
-            status(color: .orange, text: "正在下载 \(spec.name) \(Int(fraction * 100))%")
-            ProgressView(value: fraction).controlSize(.mini)
+            status(color: .kpGold, text: "正在下载 \(spec.name) \(Int(fraction * 100))%")
+            KPProgressBar(value: fraction)
             Text("只需下载一次，之后可离线使用").font(.caption2).foregroundStyle(.tertiary)
         case .failed(let message):
-            status(color: .red, text: "模型下载失败")
+            status(color: .kpCoral, text: "模型下载失败")
             Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         case .notDownloaded:
-            status(color: .gray, text: "还没有模型 · 点此下载")
+            status(color: .kpMuted, text: "还没有模型 · 点此下载")
         case .downloaded:
             switch engine.phase {
             case .idle, .loading:
-                status(color: .orange, text: "正在加载 \(spec.name)…")
+                status(color: .kpGold, text: "正在加载 \(spec.name)…")
             case .ready:
-                status(color: .green, text: "\(spec.name) · 就绪")
+                status(color: .kpCyan, text: "\(spec.name) · 就绪")
             case .failed(let message):
-                status(color: .red, text: "模型加载失败")
+                status(color: .kpCoral, text: "模型加载失败")
                 Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -232,7 +295,7 @@ private struct ModelStatusView: View {
 
     private func status(color: Color, text: String) -> some View {
         HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7)
+            Circle().fill(color).frame(width: 7, height: 7).shadow(color: color, radius: 4)
             Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)

@@ -46,7 +46,7 @@ struct VoiceDetailView: View {
                 header(voice)
                 editor
                 history(voice)
-                Divider()
+                KPDivider()
                 toolbar
             }
             .onAppear {
@@ -54,6 +54,9 @@ struct VoiceDetailView: View {
                 text = generator.drafts[voiceID] ?? ""
                 generator.visibleVoiceID = voiceID
                 isEditorFocused = true
+                if ProcessInfo.processInfo.environment["KP_PLAY"] != nil, let clip = voice.clips.first {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { player.toggle(store.fileURL(clip.fileName)) }
+                }
             }
             .onDisappear {
                 store.rename(voiceID, to: name)
@@ -97,11 +100,12 @@ struct VoiceDetailView: View {
     // MARK: - Sections
 
     private func header(_ voice: Voice) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 12) {
+            VoiceAvatar(name: name, size: 38)
+            VStack(alignment: .leading, spacing: 3) {
                 TextField("名字", text: $name)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 18, weight: .bold))
                     .onSubmit { store.rename(voiceID, to: name) }
                     .help("点击修改名字")
                 Button { referenceDraft = voice.referenceText } label: {
@@ -111,7 +115,7 @@ struct VoiceDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kpMuted)
                 .help("点击校对：要和录音里说的一字不差，否则可能多读或漏读")
             }
             Spacer(minLength: 12)
@@ -119,9 +123,9 @@ struct VoiceDetailView: View {
             Button {
                 player.toggle(sampleURL)
             } label: {
-                Image(systemName: player.isPlaying(sampleURL) ? "stop.fill" : "play.fill")
+                Label(player.isPlaying(sampleURL) ? "停止" : "听原声", systemImage: player.isPlaying(sampleURL) ? "stop.fill" : "waveform")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.kpGhost)
             .help(player.isPlaying(sampleURL) ? "停止" : "听原声")
             if (engine.loadedSpec ?? models.activeSpec).family == .qwen3 {
                 languageMenu(voice)
@@ -137,9 +141,9 @@ struct VoiceDetailView: View {
             .menuIndicator(.hidden)
             .fixedSize()
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 22)
         .padding(.top, 18)
-        .padding(.bottom, 8)
+        .padding(.bottom, 10)
     }
 
     private func languageMenu(_ voice: Voice) -> some View {
@@ -168,7 +172,7 @@ struct VoiceDetailView: View {
                     Text("输入想让「\(name)」说的话…\n想让每一段情绪不同，可以这样写：[生气]我真的生气了。[害怕]我被吓到了。")
                         .font(.system(size: 18))
                         .lineSpacing(6)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.kpMuted.opacity(0.55))
                         .padding(.leading, 5)
                         .allowsHitTesting(false)
                 }
@@ -182,8 +186,22 @@ struct VoiceDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             editorFooter
         }
-        .padding(.horizontal, 15)
-        .padding(.vertical, 8)
+        .padding(12)
+        .kpPanel(cornerRadius: 16, isHighlighted: isEditorFocused || isBusy)
+        .overlay(alignment: .bottom) {
+            if isBusy {
+                GeneratingWave()
+                    .frame(height: 26)
+                    .padding(.horizontal, 40)
+                    .offset(y: 13)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.3), value: isEditorFocused)
+        .animation(.easeOut(duration: 0.3), value: isBusy)
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .padding(.bottom, 14)
     }
 
     private var editorFooter: some View {
@@ -193,7 +211,7 @@ struct VoiceDetailView: View {
             Button { phrasing.isPresented = true } label: {
                 Label(phrasing.summary, systemImage: phrasing.config.isUsable ? "text.word.spacing" : "text.alignleft")
                     .labelStyle(.titleAndIcon)
-                    .foregroundStyle(phrasing.config.isUsable ? Color.accentColor : .secondary)
+                    .foregroundStyle(phrasing.config.isUsable ? Color.kpCyan : .kpMuted)
             }
             .buttonStyle(.borderless)
             .help("生成前用大模型按朗读习惯断句，原文不改一个字")
@@ -215,7 +233,7 @@ struct VoiceDetailView: View {
             .help("在光标处插入标签，标签后面的文字都用这个情绪，直到下一个标签")
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Color.kpMuted)
         .padding(.horizontal, 5)
     }
 
@@ -230,7 +248,7 @@ struct VoiceDetailView: View {
             Text("分 \(script.segments.count) 段：\(flow)\(unknown)")
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .foregroundStyle(script.unknownTags.isEmpty ? Color.secondary : Color.orange)
+                .foregroundStyle(script.unknownTags.isEmpty ? Color.kpGold.opacity(0.85) : Color.kpCoral)
         }
     }
 
@@ -249,7 +267,6 @@ struct VoiceDetailView: View {
 
     private func history(_ voice: Voice) -> some View {
         VStack(spacing: 0) {
-            Divider()
             if !voice.clips.isEmpty || !externalJobs.isEmpty {
                 Button {
                     withAnimation(.snappy(duration: 0.2)) { isHistoryExpanded.toggle() }
@@ -262,7 +279,7 @@ struct VoiceDetailView: View {
                         Spacer()
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kpMuted)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 8)
                     .contentShape(Rectangle())
@@ -284,9 +301,9 @@ struct VoiceDetailView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 12)
                 }
-                .frame(maxHeight: 190)
+                .frame(maxHeight: 200)
             }
             jobsEntry
         }
@@ -301,13 +318,13 @@ struct VoiceDetailView: View {
                 Text("含 MCP、命令行").foregroundStyle(.tertiary)
                 Spacer()
                 if jobs.runningCount > 0 {
-                    ProgressView().controlSize(.mini)
+                    GeneratingWave().frame(width: 24, height: 12)
                     Text("\(jobs.runningCount) 条进行中")
                 }
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.kpMuted)
             .padding(.horizontal, 20)
             .padding(.vertical, 7)
             .contentShape(Rectangle())
@@ -323,23 +340,22 @@ struct VoiceDetailView: View {
                 isApproximate: !(engine.loadedSpec ?? models.activeSpec).supportsEmotionInstruction,
                 onOpenModels: { models.isPresented = true }
             )
-            Picker("语速", selection: $speed) {
-                ForEach(SpeechSpeed.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .help("语速")
+            KPSegmented(selection: $speed, options: SpeechSpeed.allCases, title: \.title)
+                .fixedSize()
+                .help("语速")
 
             statusLine
                 .frame(maxWidth: .infinity, alignment: .trailing)
 
             if isBusy {
-                Button("停止", action: cancelGeneration)
+                Button("停止", action: cancelGeneration).buttonStyle(.kpGhost)
             }
             Button(action: startGeneration) {
-                Text(isBusy ? "生成中…" : "生成").frame(minWidth: 56)
+                Label(isBusy ? "生成中…" : "生成", systemImage: "waveform")
+                    .symbolEffect(.variableColor.iterative, isActive: isBusy)
+                    .frame(minWidth: 64)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.kpPrimaryLarge)
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(trimmedText.isEmpty || isBusy)
             .help("⌘↩ 生成")
@@ -354,14 +370,13 @@ struct VoiceDetailView: View {
         Group {
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.kpGold)
                     .help(errorMessage)
             } else if isWaitingForModel {
                 Label("模型准备好后自动生成", systemImage: "hourglass")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kpMuted)
             } else if let progress {
                 HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
                     TimelineView(.periodic(from: progress.startedAt, by: 1)) { context in
                         let seconds = Int(context.date.timeIntervalSince(progress.startedAt))
                         Text(progress.isPhrasing ? "智能断句中 · \(seconds) 秒"
@@ -370,9 +385,9 @@ struct VoiceDetailView: View {
                             .monospacedDigit()
                     }
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kpCyan)
             } else if !trimmedText.isEmpty {
-                Text("\(trimmedText.count) 字").foregroundStyle(.tertiary)
+                Text("\(trimmedText.count) 字").foregroundStyle(Color.kpMuted.opacity(0.7))
             }
         }
         .font(.caption)
@@ -427,14 +442,17 @@ private struct ClipRow: View {
 
     @State private var isHovered = false
 
+    private var isPlaying: Bool { player.isPlaying(url) }
+
     var body: some View {
         HStack(spacing: 10) {
-            PlayButton(isPlaying: player.isPlaying(url), size: 26) { player.toggle(url) }
+            PlayButton(isPlaying: isPlaying, size: 28) { player.toggle(url) }
+            ClipWaveform(url: url).frame(width: 96, height: 26)
             VStack(alignment: .leading, spacing: 2) {
                 Text(clip.text).lineLimit(1)
                 Text(meta)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kpMuted)
             }
             Spacer()
             Button(action: export) {
@@ -444,11 +462,20 @@ private struct ClipRow: View {
             .opacity(isHovered ? 1 : 0)
             .help("导出音频")
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(isHovered ? Color.primary.opacity(0.05) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isPlaying ? Color.kpCyan.opacity(0.08) : .white.opacity(isHovered ? 0.05 : 0.02))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(isPlaying ? Color.kpCyan.opacity(0.35) : .white.opacity(isHovered ? 0.08 : 0.04))
+        )
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.2), value: isPlaying)
         .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider() }
         .contextMenu {
             Button("导出…", action: export)

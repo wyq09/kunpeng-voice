@@ -27,6 +27,7 @@ let package = Package(
                 .product(name: "VoxCPM2TTS", package: "SpeechSwift"),
             ],
             path: "Sources/CloneVoice",
+            resources: [.copy("../../Resources/AppIcon-1024.png")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]
