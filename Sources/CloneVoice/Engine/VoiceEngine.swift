@@ -117,10 +117,7 @@ final class VoiceEngine {
             }
             let results = await withTaskGroup(of: (String, Result<[String], Error>).self) { group in
                 for paragraph in pending {
-                    group.addTask {
-                        do { return (paragraph, .success(try await ScriptPolisher.lines(for: paragraph, maxLength: maxLength, config: config))) }
-                        catch { return (paragraph, .failure(error)) }
-                    }
+                    group.addTask { await Self.polish(paragraph, maxLength: maxLength, config: config) }
                 }
                 return await group.reduce(into: []) { $0.append($1) }
             }
@@ -146,6 +143,15 @@ final class VoiceEngine {
             }
         }
         return (jobs, notice)
+    }
+
+    /// Kept out of the `addTask` closure: inlined there, Swift 6.4 -O registers the children with no
+    /// group, which then returns empty and crashes when their results arrive.
+    nonisolated private static func polish(
+        _ paragraph: String, maxLength: Int, config: PolisherConfig
+    ) async -> (String, Result<[String], Error>) {
+        do { return (paragraph, .success(try await ScriptPolisher.lines(for: paragraph, maxLength: maxLength, config: config))) }
+        catch { return (paragraph, .failure(error)) }
     }
 
     private func cacheKey(_ paragraph: String, _ maxLength: Int, _ config: PolisherConfig) -> String {
