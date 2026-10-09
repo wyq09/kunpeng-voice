@@ -37,7 +37,7 @@ final class MCPServer {
             reply(id, [
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": [String: Any]()],
-                "serverInfo": ["name": "clonevoice", "title": "鲲鹏有声", "version": "1.0"],
+                "serverInfo": ["name": "clonevoice", "title": "鲲鹏有声", "version": "1.0.1"],
                 "instructions": "用用户克隆的声音把文字读出来，生成本地 wav 文件。先调用 list_voices 查看可用声音，再调用 speak。",
             ])
         case "ping":
