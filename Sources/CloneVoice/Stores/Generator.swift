@@ -6,14 +6,17 @@ import Observation
 @MainActor
 @Observable
 final class Generator {
-    struct Active {
+    struct Run: Identifiable {
+        let id: UUID
+        let voiceID: Voice.ID
+        let text: String
         let startedAt: Date
         var current = 1
         var total = 1
         var isPhrasing: Bool { current == 0 }
     }
 
-    private(set) var active: [Voice.ID: Active] = [:]
+    private(set) var runs: [UUID: Run] = [:]
     /// Last outcome worth telling the user about, per voice.
     var messages: [Voice.ID: String] = [:]
     /// Unsent text per voice, so leaving a voice doesn't lose what was typed.
@@ -21,10 +24,19 @@ final class Generator {
     /// The voice on screen; finished clips only auto-play there.
     var visibleVoiceID: Voice.ID?
 
-    private var tasks: [Voice.ID: Task<Void, Never>] = [:]
+    private var tasks: [UUID: Task<Void, Never>] = [:]
 
-    func isGenerating(_ voiceID: Voice.ID) -> Bool { active[voiceID] != nil }
+    var activeRunCount: Int { runs.count }
 
+    func runs(for voiceID: Voice.ID) -> [Run] {
+        runs.values.filter { $0.voiceID == voiceID }.sorted { $0.startedAt > $1.startedAt }
+    }
+
+    func isGenerating(_ voiceID: Voice.ID) -> Bool {
+        runs.values.contains { $0.voiceID == voiceID }
+    }
+
+    @discardableResult
     func start(
         _ text: String,
         for voice: Voice,
@@ -33,20 +45,20 @@ final class Generator {
         store: VoiceStore,
         engine: VoiceEngine,
         player: Player
-    ) {
+    ) -> UUID {
         let voiceID = voice.id
-        guard tasks[voiceID] == nil else { return }
+        let runID = UUID()
         let modelName = engine.loadedSpec?.name ?? "未知模型"
         let started = Date.now
         messages[voiceID] = nil
-        active[voiceID] = Active(startedAt: started)
+        runs[runID] = Run(id: runID, voiceID: voiceID, text: text, startedAt: started)
 
-        tasks[voiceID] = Task {
+        tasks[runID] = Task {
             let recorder = JobRecorder(source: .app, voiceName: voice.name, modelName: modelName, text: text)
             recorder.modelReady(modelName)
             defer {
-                tasks[voiceID] = nil
-                active[voiceID] = nil
+                tasks[runID] = nil
+                runs[runID] = nil
             }
             do {
                 let result = try await engine.synthesize(
@@ -57,8 +69,8 @@ final class Generator {
                     style: style,
                     speed: speed
                 ) { current, total in
-                    self.active[voiceID]?.current = current
-                    self.active[voiceID]?.total = total
+                    self.runs[runID]?.current = current
+                    self.runs[runID]?.total = total
                     recorder.progress(current, total)
                 }
                 try Task.checkCancellation()
@@ -84,9 +96,16 @@ final class Generator {
                 messages[voiceID] = "生成失败，改短一点再试试"
             }
         }
+        return runID
     }
 
-    func cancel(_ voiceID: Voice.ID) {
-        tasks[voiceID]?.cancel()
+    func cancel(_ runID: UUID) {
+        tasks[runID]?.cancel()
+    }
+
+    func cancelAll(for voiceID: Voice.ID) {
+        for run in runs(for: voiceID) {
+            tasks[run.id]?.cancel()
+        }
     }
 }

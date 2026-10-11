@@ -25,6 +25,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),                .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "CosyVoiceTTS", package: "SpeechSwift"),
                 .product(name: "VoxCPM2TTS", package: "SpeechSwift"),
+                .product(name: "SpeechEnhancement", package: "SpeechSwift"),
             ],
             path: "Sources/CloneVoice",
             resources: [.copy("../../Resources/AppIcon-1024.png")],

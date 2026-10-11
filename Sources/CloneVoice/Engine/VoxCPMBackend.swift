@@ -23,16 +23,19 @@ final class VoxCPMBackend: CloneBackend {
         )
     }
 
-    /// VoxCPM2 keeps the reference as the timbre anchor and, for follow-up chunks, continues
-    /// from the previous chunk so pace and tone carry over instead of restarting each time.
-    /// Without a previous chunk: prompt continuation of the reference, or "controllable cloning"
-    /// when a style is set. VoxCPM 1.5 has no separate timbre input, so it always continues the reference.
+    /// VoxCPM2 keeps the reference as the timbre anchor and, for follow-up chunks in the same
+    /// style, continues from the previous chunk so pace and tone carry over instead of
+    /// restarting each time. Otherwise: prompt continuation of the reference, or "controllable
+    /// cloning" when a style is set, which acts the emotion out most but anchors the timbre
+    /// least. Retries (`variant` > 0) anchor harder, and never continue a chunk that drifted.
+    /// VoxCPM 1.5 has no separate timbre input, so it always continues the reference.
     func generate(
         text: String, sampleURL: URL, referenceText: String, language _: VoiceLanguage, style: SpeechStyle,
-        faithful: Bool, previous: SpokenChunk?
+        faithful: Bool, previous: SpokenChunk?, variant: Int
     ) async throws -> [Float] {
         let reference = try reference(for: sampleURL)
-        if !faithful { MLXRandom.seed(Self.seed) }
+        // Retries offset the seed; otherwise a reroll would reproduce the same take.
+        MLXRandom.seed(Self.seed &+ UInt64(variant))
         if isVersion1 {
             return try await model.generateVoxCPM2(
                 text: text,
@@ -41,7 +44,7 @@ final class VoxCPMBackend: CloneBackend {
                 streamingPrefixLen: 3
             )
         }
-        if !faithful, let previous {
+        if !faithful, let previous, previous.style == style, variant == 0 {
             return try await model.generateVoxCPM2(
                 text: text,
                 refAudio: reference,
@@ -57,7 +60,23 @@ final class VoxCPMBackend: CloneBackend {
                 promptAudio: reference
             )
         }
-        return try await model.generateVoxCPM2(text: text, refAudio: reference, instruct: instruction)
+        guard variant > 0 else {
+            return try await model.generateVoxCPM2(text: text, refAudio: reference, instruct: instruction)
+        }
+        // The voice drifted: anchor harder but keep the style. Continuing a chunk spoken in
+        // another style borrows its timbre and keeps more of the emotion; continuing the
+        // reference holds the timbre best but flattens the emotion, so it comes last.
+        if let previous, previous.style != style {
+            return try await model.generateVoxCPM2(
+                text: text,
+                refAudio: reference,
+                promptText: previous.text,
+                promptAudio: AudioEffects.resampled(previous.samples, from: sampleRate, to: encoderRate),
+                instruct: instruction
+            )
+        }
+        return try await model.generateVoxCPM2(
+            text: text, refAudio: reference, promptText: referenceText, promptAudio: reference, instruct: instruction)
     }
 
     private func reference(for url: URL) throws -> [Float] {

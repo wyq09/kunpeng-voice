@@ -135,7 +135,8 @@ final class ModelManager {
         let temp = fileManager.temporaryDirectory
         for url in (try? fileManager.contentsOfDirectory(at: temp, includingPropertiesForKeys: nil)) ?? [] {
             let name = url.lastPathComponent
-            if name.hasPrefix("recording-") || name.hasPrefix("upload-") || name.hasPrefix("CFNetworkDownload_") {
+            if name.hasPrefix("recording-") || name.hasPrefix("upload-") || name.hasPrefix("cleaned-")
+                || name.hasPrefix("CFNetworkDownload_") {
                 urls.append(url)
             }
         }

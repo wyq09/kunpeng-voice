@@ -10,6 +10,8 @@ let package = Package(
     products: [
         .library(name: "CosyVoiceTTS", targets: ["CosyVoiceTTS"]),
         .library(name: "VoxCPM2TTS", targets: ["VoxCPM2TTS"]),
+        // CloneVoice patch: DeepFilterNet3 noise suppression (MLX path only).
+        .library(name: "SpeechEnhancement", targets: ["SpeechEnhancement"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.30.0"),
@@ -50,6 +52,15 @@ let package = Package(
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
+            ]
+        ),
+        .target(
+            name: "SpeechEnhancement",
+            dependencies: [
+                "AudioCommon",
+                "MLXCommon",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
             ]
         ),
     ]

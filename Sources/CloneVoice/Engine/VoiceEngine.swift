@@ -64,7 +64,9 @@ final class VoiceEngine {
 
         var output: [Float] = []
         var sampleRate = 24_000
-        var previous: (chunk: SpokenChunk, style: SpeechStyle)?
+        var previous: SpokenChunk?
+        /// Last measured pace per style, for chunks too short to measure on their own.
+        var lastPace: [SpeechStyle: Double] = [:]
         for (index, job) in jobs.enumerated() {
             try Task.checkCancellation()
             onProgress(index + 1, jobs.count)
@@ -74,18 +76,36 @@ final class VoiceEngine {
                 referenceText: referenceText,
                 language: language,
                 style: job.style,
-                previous: previous?.style == job.style ? previous?.chunk : nil
+                followsInstructions: usesInstruction,
+                previous: previous
             )
             sampleRate = result.sampleRate
-            previous = (SpokenChunk(samples: result.samples, text: job.text), job.style)
             let prosody = job.style.prosody
             let followedInstruction = usesInstruction && !result.isFaithfulFallback
-            output += try AudioEffects.process(
-                result.samples,
-                sampleRate: sampleRate,
-                rate: (followedInstruction ? 1 : prosody.tempo) * speed.rate,
-                pitchCents: followedInstruction ? 0 : prosody.pitchCents
-            )
+            if let pace = result.pace { lastPace[job.style] = pace }
+            // A model that acted the instruction out should already speak at the style's tempo;
+            // otherwise it speaks like the reference and the style tempo is added by stretching.
+            // Short chunks borrow the last pace measured in their style.
+            let expectedPace = followedInstruction ? prosody.tempo : 1
+            let drift = (result.pace ?? lastPace[job.style]).map {
+                PaceControl.driftCorrection(measuredPace: $0, expected: expectedPace)
+            } ?? 1
+            let correction = drift * (followedInstruction ? 1 : prosody.tempo)
+            let pitchCents = followedInstruction ? 0 : prosody.appliedPitchCents
+            let rate = PaceControl.rate(correction: correction, speed: speed)
+            let processed = try AudioEffects.process(result.samples, sampleRate: sampleRate, rate: rate, pitchCents: pitchCents)
+            output += processed
+            PaceControl.debugLog(
+                "[\(job.style.title)] pace=\(result.pace.map { String(format: "%.2f", $0) } ?? "–") "
+                    + "expected=\(String(format: "%.2f", expectedPace)) rate=\(String(format: "%.2f", rate))"
+                    + "\(result.isFaithfulFallback ? " faithful" : "") 「\(job.text.prefix(12))」")
+            // Continue from a take corrected to the style's pace so one rushed chunk can't make the
+            // next copy and compound it. The user's speed is left out (it's applied again to every
+            // chunk), and pitch-shifted audio would pull the timbre, so that is never used.
+            let paced = pitchCents == 0 && speed == .normal
+                ? processed
+                : try AudioEffects.process(result.samples, sampleRate: sampleRate, rate: correction, pitchCents: 0)
+            previous = SpokenChunk(samples: paced, text: job.text, style: job.style)
             if index < jobs.count - 1 {
                 let pause = job.boundary.pause(base: prosody.pause) / Double(speed.rate)
                 output += [Float](repeating: 0, count: Int(Double(sampleRate) * pause))
@@ -159,14 +179,51 @@ final class VoiceEngine {
     }
 }
 
+/// Keeps every chunk at the pace its style calls for. Each chunk is generated on its own and
+/// autoregressive models drift in speed from take to take, which is what makes a tagged script
+/// suddenly rush or drag; the fix is to measure each take and time-stretch it to a target.
+enum PaceControl {
+    /// Takes already this close to the target are left untouched, so the stretch never adds
+    /// artifacts for nothing and natural variation survives.
+    static let tolerance = 1.08
+    /// Total stretch never goes beyond this; more audibly warbles the voice.
+    static let rateRange: ClosedRange<Float> = 0.75...1.35
+
+    /// Final playback rate: the pace correction, then the user's speed applied in full.
+    static func rate(correction: Float, speed: SpeechSpeed) -> Float {
+        clamped(correction * speed.rate)
+    }
+
+    /// Stretch that brings a take whose pace is `measuredPace` times the reference speaker's to
+    /// the pace the model was expected to produce. Only the drift beyond the tolerance is
+    /// corrected, keeping the mapping smooth.
+    static func driftCorrection(measuredPace: Double, expected: Float) -> Float {
+        guard measuredPace > 0, expected > 0 else { return 1 }
+        let deviation = log(measuredPace / Double(expected))
+        let excess = max(0, abs(deviation) - log(tolerance)) * (deviation < 0 ? -1 : 1)
+        return clamped(Float(exp(-excess)))
+    }
+
+    private static func clamped(_ rate: Float) -> Float {
+        min(max(rate, rateRange.lowerBound), rateRange.upperBound)
+    }
+
+    /// Per-chunk pace report on stderr, for tuning: `CLONEVOICE_DEBUG_PACE=1 CloneVoice speak …`.
+    static func debugLog(_ message: @autoclosure () -> String) {
+        guard ProcessInfo.processInfo.environment["CLONEVOICE_DEBUG_PACE"] != nil else { return }
+        FileHandle.standardError.write(Data((message() + "\n").utf8))
+    }
+}
+
 protocol CloneBackend: AnyObject {
     var sampleRate: Int { get }
     /// `faithful` trades style control for voice fidelity: style instructions can pull the
     /// model away from the reference speaker, so retries after a voice drift drop them.
-    /// `previous` is the chunk spoken just before in the same style, for backends that can continue from it.
+    /// `previous` is the chunk spoken just before, for backends that can continue from it.
+    /// `variant` changes the sampling seed so a retry doesn't reproduce the same take.
     func generate(
         text: String, sampleURL: URL, referenceText: String, language: VoiceLanguage, style: SpeechStyle,
-        faithful: Bool, previous: SpokenChunk?
+        faithful: Bool, previous: SpokenChunk?, variant: Int
     ) async throws -> [Float]
 }
 
@@ -174,18 +231,36 @@ protocol CloneBackend: AnyObject {
 struct SpokenChunk {
     let samples: [Float]
     let text: String
+    let style: SpeechStyle
 }
 
 /// Owns the non-Sendable model so it is only ever touched from one executor.
 actor SynthesisWorker {
-    /// Beyond this a chunk no longer sounds like the same person (male ≈ 100 Hz, female ≈ 200 Hz).
+    /// Semitones from the expected pitch beyond which a chunk no longer sounds like the same
+    /// person (male ≈ 100 Hz, female ≈ 200 Hz). Acted emotions are measured around the style's
+    /// expected shift; whether the timbre held is the speaker similarity's call.
     private static let maxPitchDrift: Float = 4
-    /// Speaking this much faster or slower than the reference sounds rushed or dragged.
-    private static let maxRateRatio: Double = 1.45
-    private static let faithfulRetries = 2
+    /// A take whose speaker similarity sits this far below the voice's usual level sounds like
+    /// someone else. Acting an emotion out lowers it by itself, by 0.15–0.2 in a well-anchored
+    /// take, so a tighter margin would reject every emotion.
+    private static let timbreMargin: Float = 0.2
+    /// Usual similarity assumed until the voice has plain takes of its own on this model
+    /// (plain takes measured 0.68 on Qwen3, 0.84 on CosyVoice 3, 0.88 on VoxCPM 2).
+    private static let defaultTimbreBaseline: Float = 0.7
+    /// Plain takes kept per voice to set its usual similarity.
+    private static let baselineSamples = 16
+    /// Pace is corrected afterwards, so only a take this far off counts as broken: at that point
+    /// the model has usually skipped or repeated words rather than just spoken fast.
+    private static let brokenPaceRatio: Double = 1.8
+    private static let retries = 2
+    /// Fewer syllables than this can't be timed reliably.
+    private static let minSyllablesForPace = 8.0
 
     private var backend: CloneBackend?
     private var reference: (url: URL, text: String, profile: SpeakerProfile?)?
+    /// Speaker similarity of takes spoken without an emotion, per voice sample. Each model
+    /// clones a voice to a different degree, so this starts over when the model changes.
+    private var plainSimilarities: [String: [Float]] = [:]
 
     private struct SpeakerProfile {
         let pitch: Float?
@@ -193,7 +268,9 @@ actor SynthesisWorker {
     }
 
     func load(_ spec: ModelSpec, from directory: URL) async throws {
+        SpeakerEmbedder.prepare()
         backend = nil
+        plainSimilarities = [:]
         releaseGPUMemory()
         switch spec.family {
         case .qwen3: backend = try await Qwen3Backend(directory: directory)
@@ -207,50 +284,117 @@ actor SynthesisWorker {
         releaseGPUMemory()
     }
 
-    /// Generates a chunk and regenerates it in faithful mode if its pitch or pace strays from the
-    /// reference speaker, keeping whichever take sounds closest to the cloned voice.
+    /// Generates a chunk and retries when it strays. A low speaker similarity or a pitch drift
+    /// means the voice stopped sounding like the speaker: an acted emotion gets one reroll with
+    /// a new seed first, and only then is the style dropped for fidelity. Similarity is judged
+    /// against what this voice usually reaches without an emotion, so voices that clone less
+    /// closely aren't held to a fixed bar. A wildly wrong pace means garbled content, so that
+    /// retry rerolls in the same mode. Plain fast or slow takes are not retried; the caller
+    /// stretches them to pace, keeping the emotion intact.
+    /// `pace` is the take's speaking rate relative to the reference, when measurable.
     func generateMatchingVoice(
         text: String,
         sampleURL: URL,
         referenceText: String,
         language: VoiceLanguage,
         style: SpeechStyle,
+        followsInstructions: Bool,
         previous: SpokenChunk?
-    ) async throws -> (samples: [Float], sampleRate: Int, isFaithfulFallback: Bool) {
+    ) async throws -> (samples: [Float], sampleRate: Int, isFaithfulFallback: Bool, pace: Double?) {
         guard let backend else { throw EngineError.notReady }
         let rate = backend.sampleRate
+        var variant = 0
         func take(faithful: Bool) async throws -> [Float] {
+            defer { variant += 1 }
             let samples = try await backend.generate(
                 text: text, sampleURL: sampleURL, referenceText: referenceText,
-                language: language, style: style, faithful: faithful, previous: previous)
+                language: language, style: style, faithful: faithful, previous: previous, variant: variant)
             releaseGPUMemory()
             return samples
         }
 
         let profile = speakerProfile(sampleURL, referenceText)
         let syllables = VoicePitch.syllables(in: text)
-        /// 0 is a perfect match; above 1 the take no longer sounds like the reference.
-        func mismatch(_ samples: [Float]) -> Double {
-            var score = 0.0
-            if let pitch = profile.pitch, let heard = VoicePitch.median(of: samples, sampleRate: rate) {
-                score = Double(VoicePitch.semitones(heard, from: pitch) / Self.maxPitchDrift)
-            }
-            if syllables >= 8, let expected = profile.syllablesPerSecond,
-               let seconds = VoicePitch.speakingSeconds(of: samples, sampleRate: rate), seconds > 0 {
-                score = max(score, abs(log(syllables / seconds / expected)) / log(Self.maxRateRatio))
-            }
-            return score
+        func pace(of samples: [Float]) -> Double? {
+            guard syllables >= Self.minSyllablesForPace, let expected = profile.syllablesPerSecond,
+                  let seconds = VoicePitch.speakingSeconds(of: samples, sampleRate: rate), seconds > 0
+            else { return nil }
+            return syllables / seconds / expected
+        }
+        /// Each part: 0 is a perfect match, above 1 the take is unusable.
+        /// Semitones from the reference speaker's median pitch.
+        func pitchShift(of samples: [Float]) -> Float? {
+            guard let pitch = profile.pitch, let heard = VoicePitch.median(of: samples, sampleRate: rate) else { return nil }
+            return 12 * log2(heard / pitch)
+        }
+        func pitchScore(_ shift: Float?, faithful: Bool) -> Double {
+            guard let shift else { return 0 }
+            // An emotion legitimately raises or lowers the voice when the model acts it out.
+            let isActing = followsInstructions && !faithful && style.instruction != nil
+            let expectedShift = isActing ? style.prosody.pitchCents / 100 : 0
+            return Double(abs(shift - expectedShift) / Self.maxPitchDrift)
+        }
+        func paceScore(_ pace: Double?) -> Double {
+            pace.map { abs(log($0)) / log(Self.brokenPaceRatio) } ?? 0
+        }
+        let identity = await SpeakerEmbedder.shared.reference(sampleURL)
+        let usualSimilarity = usualSimilarity(of: sampleURL)
+        func similarity(of samples: [Float]) async -> Float? {
+            guard let identity, let heard = await SpeakerEmbedder.shared.embedding(of: samples, sampleRate: rate)
+            else { return nil }
+            return SpeakerEmbedder.similarity(identity, heard)
         }
 
-        var best = (samples: try await take(faithful: false), isFaithfulFallback: false)
-        var bestScore = mismatch(best.samples)
-        for _ in 0..<Self.faithfulRetries where bestScore > 1 {
-            try Task.checkCancellation()
-            let candidate = try await take(faithful: true)
-            let score = mismatch(candidate)
-            if score < bestScore { (best, bestScore) = ((candidate, true), score) }
+        struct Take {
+            let samples: [Float]
+            let faithful: Bool
+            let pace: Double?
+            let similarity: Float?
+            let pitch: Double
+            let timbre: Double
+            let paceScore: Double
+            var voiceDrifted: Bool { pitch > 1 || timbre > 1 }
+            var worst: Double { max(pitch, timbre, paceScore) }
         }
-        return (best.samples, rate, best.isFaithfulFallback)
+        func evaluate(_ samples: [Float], faithful: Bool) async -> Take {
+            let measured = pace(of: samples)
+            let heard = await similarity(of: samples)
+            let shift = pitchShift(of: samples)
+            let take = Take(
+                samples: samples, faithful: faithful, pace: measured, similarity: heard,
+                pitch: pitchScore(shift, faithful: faithful),
+                timbre: heard.map { Double(max(0, usualSimilarity - $0) / Self.timbreMargin) } ?? 0,
+                paceScore: paceScore(measured))
+            PaceControl.debugLog(String(
+                format: "  take%@: similarity %@ (usual %.2f), pitch %@ st; scores timbre %.2f, pitch %.2f, pace %.2f (above 1 = retry)",
+                faithful ? " (faithful)" : "", heard.map { String(format: "%.2f", $0) } ?? "–", usualSimilarity,
+                shift.map { String(format: "%+.1f", $0) } ?? "–", take.timbre, take.pitch, take.paceScore))
+            return take
+        }
+
+        let isActed = followsInstructions && style.instruction != nil
+        var best = await evaluate(try await take(faithful: false), faithful: false)
+        for attempt in 0..<Self.retries {
+            guard best.voiceDrifted || best.paceScore > 1 else { break }
+            try Task.checkCancellation()
+            let rerollsEmotion = best.voiceDrifted && isActed && attempt == 0
+            let faithful = best.faithful || (best.voiceDrifted && !rerollsEmotion)
+            let candidate = await evaluate(try await take(faithful: faithful), faithful: faithful)
+            if candidate.worst < best.worst { best = candidate }
+        }
+        if let similarity = best.similarity, best.faithful || style.instruction == nil {
+            let recorded = plainSimilarities[sampleURL.path, default: []] + [similarity]
+            plainSimilarities[sampleURL.path] = Array(recorded.suffix(Self.baselineSamples))
+        }
+        return (best.samples, rate, best.faithful, best.pace)
+    }
+
+    /// Median similarity of this voice's plain takes on the loaded model.
+    private func usualSimilarity(of sampleURL: URL) -> Float {
+        guard let recorded = plainSimilarities[sampleURL.path]?.sorted(), !recorded.isEmpty else {
+            return Self.defaultTimbreBaseline
+        }
+        return recorded[recorded.count / 2]
     }
 
     private func speakerProfile(_ url: URL, _ text: String) -> SpeakerProfile {

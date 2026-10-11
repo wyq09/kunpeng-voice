@@ -15,7 +15,11 @@ struct NewVoiceView: View {
     @State private var promptIndex = 0
     @State private var promptText = Self.prompts[0]
 
-    @State private var sampleURL: URL?
+    /// The sample as recorded / uploaded, and its denoised copy.
+    @State private var rawSampleURL: URL?
+    @State private var cleaned: VoiceCleaner.Result?
+    @State private var isDenoiseOn = true
+    @State private var isCleaning = false
     @State private var referenceText = ""
     @State private var name = ""
     @State private var isTranscribing = false
@@ -59,6 +63,7 @@ struct NewVoiceView: View {
                     .allowsHitTesting(false)
                 }
         }
+        .onAppear { VoiceCleaner.prepare() }
         .onDisappear {
             recorder.stop()
             player.stop()
@@ -91,7 +96,7 @@ struct NewVoiceView: View {
     private var recordStage: some View {
         VStack(spacing: 0) {
             promptCard
-            Text("可以改成你想念的话，念的内容要和这里一字不差。")
+            Text("可以改成你想念的话，念的内容要和这里一字不差。离麦克风 20 厘米内、关掉风扇效果最好，背景杂音会自动去除。")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -220,12 +225,14 @@ struct NewVoiceView: View {
             .padding(14)
             .kpPanel(cornerRadius: 14, isHighlighted: player.isPlaying(url))
 
+            denoiseToggle
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("音频里说的话").font(.caption).foregroundStyle(Color.kpMuted)
                 TextField("请填写音频里说的每一个字", text: $referenceText, axis: .vertical)
                     .textFieldStyle(.kp)
                     .disabled(isTranscribing)
-                Text(notice ?? (isTranscribing ? "正在核对你实际说的话…" : "已按录音自动识别，和录音一字不差时克隆最像，有错字改一下。"))
+                Text(notice ?? (isCleaning ? "正在去除背景杂音…" : isTranscribing ? "正在核对你实际说的话…" : "已按录音自动识别，和录音一字不差时克隆最像，有错字改一下。"))
                     .font(.caption)
                     .foregroundStyle(notice == nil ? Color.kpMuted : Color.kpGold)
             }
@@ -243,6 +250,32 @@ struct NewVoiceView: View {
             .buttonStyle(.kpPrimaryLarge)
             .keyboardShortcut(.defaultAction)
             .disabled(!canSave)
+        }
+    }
+
+    private var denoiseToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: $isDenoiseOn) {
+                Text("去除背景杂音，只保留干声")
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(cleaned == nil)
+            .onChange(of: isDenoiseOn) { player.stop() }
+            Text(denoiseCaption)
+                .font(.caption)
+                .foregroundStyle(Color.kpMuted)
+        }
+        .padding(.horizontal, 2)
+    }
+
+    private var denoiseCaption: String {
+        if isCleaning { return "正在处理…" }
+        guard let cleaned else { return "降噪没有成功，将使用原始录音。" }
+        guard isDenoiseOn else { return "正在使用原始录音。打开开关对比一下，选听起来更自然的。" }
+        switch cleaned.method {
+        case .neural: return "已用 AI 降噪去掉环境声，并修剪了首尾静音。听着发闷或失真可以关掉对比。"
+        case .basic: return "已做基础降噪（AI 降噪模型还没下载好），对风扇、电流声有效。"
         }
     }
 
@@ -269,9 +302,24 @@ struct NewVoiceView: View {
 
     // MARK: - Actions
 
+    /// What gets played back and saved: the dry copy unless the user switched denoising off.
+    private var sampleURL: URL? {
+        guard let rawSampleURL else { return nil }
+        return isDenoiseOn ? cleaned?.url ?? rawSampleURL : rawSampleURL
+    }
+
     private var canSave: Bool {
         let hasText = !referenceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasText && !isTranscribing
+        return hasText && !isTranscribing && !isCleaning
+    }
+
+    /// Denoises first so the recogniser also hears the clean voice, then transcribes.
+    /// A failed denoise falls back to the raw sample; a failed recognition throws.
+    private func cleanAndTranscribe(_ url: URL) async throws -> String {
+        isCleaning = true
+        cleaned = try? await VoiceCleaner.clean(url)
+        isCleaning = false
+        return try await Transcriber.transcribe(cleaned?.url ?? url)
     }
 
     private func toggleRecording() {
@@ -289,13 +337,14 @@ struct NewVoiceView: View {
         }
         referenceText = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         name = defaultName
-        sampleURL = url
+        cleaned = nil
+        rawSampleURL = url
 
         // People rarely read the prompt verbatim; a mismatched transcript makes the clone leak or skip words.
         isTranscribing = true
         Task {
             defer { isTranscribing = false }
-            if let heard = try? await Transcriber.transcribe(url),
+            if let heard = try? await cleanAndTranscribe(url),
                !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 referenceText = heard
             }
@@ -317,23 +366,26 @@ struct NewVoiceView: View {
         }
 
         isTranscribing = true
+        cleaned = nil
         Task {
             defer { isTranscribing = false }
             do {
-                referenceText = try await Transcriber.transcribe(prepared)
+                referenceText = try await cleanAndTranscribe(prepared)
             } catch {
                 referenceText = ""
                 notice = error.localizedDescription
             }
             name = url.deletingPathExtension().lastPathComponent
-            sampleURL = prepared
+            rawSampleURL = prepared
         }
     }
 
     private func resetSample() {
         player.stop()
         if mode == .record { recorder.discard() }
-        sampleURL = nil
+        if let cleaned { try? FileManager.default.removeItem(at: cleaned.url) }
+        cleaned = nil
+        rawSampleURL = nil
         notice = nil
         if mode == .upload { isImporterPresented = true }
     }

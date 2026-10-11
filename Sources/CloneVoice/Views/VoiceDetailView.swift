@@ -30,8 +30,8 @@ struct VoiceDetailView: View {
     @FocusState private var isEditorFocused: Bool
 
     private var voice: Voice? { store.voice(id: voiceID) }
-    private var isBusy: Bool { generator.isGenerating(voiceID) }
-    private var progress: Generator.Active? { generator.active[voiceID] }
+    private var appRuns: [Generator.Run] { generator.runs(for: voiceID) }
+    private var isBusy: Bool { !appRuns.isEmpty }
     private var errorMessage: String? { localError ?? generator.messages[voiceID] }
     private var trimmedText: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
     /// Generations of this voice still running in other processes (MCP, command line).
@@ -167,21 +167,25 @@ struct VoiceDetailView: View {
 
     private var editor: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                if text.isEmpty {
-                    Text("输入想让「\(name)」说的话…\n想让每一段情绪不同，可以这样写：[生气]我真的生气了。[害怕]我被吓到了。")
-                        .font(.system(size: 18))
-                        .lineSpacing(6)
-                        .foregroundStyle(Color.kpMuted.opacity(0.55))
-                        .padding(.leading, 5)
-                        .allowsHitTesting(false)
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text("输入想让「\(name)」说的话…\n想让每一段情绪不同，可以这样写：[生气]我真的生气了。[害怕]我被吓到了。")
+                            .font(.system(size: 18))
+                            .lineSpacing(6)
+                            .foregroundStyle(Color.kpMuted.opacity(0.55))
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                    TaggedScriptEditor(
+                        text: $text,
+                        selection: $textSelection,
+                        defaultStyle: style,
+                        layoutWidth: geo.size.width,
+                        isEnabled: true
+                    )
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
-                TextEditor(text: $text, selection: $textSelection)
-                    .scrollContentBackground(.hidden)
-                    .font(.system(size: 18))
-                    .lineSpacing(6)
-                    .focused($isEditorFocused)
-                    .disabled(isBusy)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             editorFooter
@@ -229,7 +233,6 @@ struct VoiceDetailView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .disabled(isBusy)
             .help("在光标处插入标签，标签后面的文字都用这个情绪，直到下一个标签")
         }
         .font(.caption)
@@ -241,14 +244,21 @@ struct VoiceDetailView: View {
     private var scriptSummary: some View {
         let script = StyledScript(text, defaultStyle: style)
         if script.usesTags {
-            let flow = script.segments.map(\.style.title).joined(separator: " → ")
-            let unknown = script.unknownTags.isEmpty
-                ? ""
-                : " · 不认识「\(script.unknownTags.joined(separator: "、"))」，已跳过"
-            Text("分 \(script.segments.count) 段：\(flow)\(unknown)")
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(script.unknownTags.isEmpty ? Color.kpGold.opacity(0.85) : Color.kpCoral)
+            HStack(spacing: 4) {
+                Text("分 \(script.segments.count) 段")
+                ForEach(Array(script.segments.enumerated()), id: \.offset) { index, segment in
+                    if index > 0 {
+                        Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Color.kpMuted.opacity(0.7))
+                    }
+                    EmotionTagPill(title: segment.style.title, accent: segment.style.tagAccent)
+                }
+            }
+            .lineLimit(1)
+            if !script.unknownTags.isEmpty {
+                Text("不认识「\(script.unknownTags.joined(separator: "、"))」，已跳过")
+                    .foregroundStyle(Color.kpCoral)
+            }
         }
     }
 
@@ -267,7 +277,7 @@ struct VoiceDetailView: View {
 
     private func history(_ voice: Voice) -> some View {
         VStack(spacing: 0) {
-            if !voice.clips.isEmpty || !externalJobs.isEmpty {
+            if !voice.clips.isEmpty || !externalJobs.isEmpty || !appRuns.isEmpty {
                 Button {
                     withAnimation(.snappy(duration: 0.2)) { isHistoryExpanded.toggle() }
                 } label: {
@@ -287,9 +297,10 @@ struct VoiceDetailView: View {
                 .buttonStyle(.plain)
             }
 
-            if isHistoryExpanded, !voice.clips.isEmpty || !externalJobs.isEmpty {
+            if isHistoryExpanded, !voice.clips.isEmpty || !externalJobs.isEmpty || !appRuns.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        ForEach(appRuns) { RunningAppRunRow(run: $0) }
                         ForEach(externalJobs) { RunningJobRow(job: $0) }
                         ForEach(voice.clips) { clip in
                             ClipRow(clip: clip, url: store.fileURL(clip.fileName)) {
@@ -348,17 +359,26 @@ struct VoiceDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
 
             if isBusy {
-                Button("停止", action: cancelGeneration).buttonStyle(.kpGhost)
+                Menu {
+                    ForEach(appRuns) { run in
+                        Button("停止：\(run.text.prefix(18))…") { generator.cancel(run.id) }
+                    }
+                    Divider()
+                    Button("停止全部", role: .destructive) { generator.cancelAll(for: voiceID) }
+                } label: {
+                    Label("停止 (\(appRuns.count))", systemImage: "stop.fill")
+                }
+                .buttonStyle(.kpGhost)
             }
             Button(action: startGeneration) {
-                Label(isBusy ? "生成中…" : "生成", systemImage: "waveform")
+                Label(isBusy ? "再生成一条" : "生成", systemImage: "waveform")
                     .symbolEffect(.variableColor.iterative, isActive: isBusy)
-                    .frame(minWidth: 64)
+                    .frame(minWidth: 72)
             }
             .buttonStyle(.kpPrimaryLarge)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(trimmedText.isEmpty || isBusy)
-            .help("⌘↩ 生成")
+            .disabled(trimmedText.isEmpty)
+            .help(isBusy ? "⌘↩ 再开一条生成任务，与进行中的并行" : "⌘↩ 生成")
         }
         .labelsHidden()
         .padding(.horizontal, 20)
@@ -375,13 +395,14 @@ struct VoiceDetailView: View {
             } else if isWaitingForModel {
                 Label("模型准备好后自动生成", systemImage: "hourglass")
                     .foregroundStyle(Color.kpMuted)
-            } else if let progress {
+            } else if let run = appRuns.first {
                 HStack(spacing: 6) {
-                    TimelineView(.periodic(from: progress.startedAt, by: 1)) { context in
-                        let seconds = Int(context.date.timeIntervalSince(progress.startedAt))
-                        Text(progress.isPhrasing ? "智能断句中 · \(seconds) 秒"
-                            : progress.total > 1 ? "第 \(progress.current)/\(progress.total) 段 · \(seconds) 秒"
-                            : "生成中 · \(seconds) 秒")
+                    TimelineView(.periodic(from: run.startedAt, by: 1)) { context in
+                        let seconds = Int(context.date.timeIntervalSince(run.startedAt))
+                        let detail = run.isPhrasing ? "智能断句中 · \(seconds) 秒"
+                            : run.total > 1 ? "第 \(run.current)/\(run.total) 段 · \(seconds) 秒"
+                            : "生成中 · \(seconds) 秒"
+                        Text(appRuns.count > 1 ? "\(appRuns.count) 条进行中 · \(detail)" : detail)
                             .monospacedDigit()
                     }
                 }
@@ -397,7 +418,7 @@ struct VoiceDetailView: View {
     // MARK: - Actions
 
     private func startGeneration() {
-        guard !trimmedText.isEmpty, !isBusy, let voice else { return }
+        guard !trimmedText.isEmpty, let voice else { return }
         localError = nil
         generator.messages[voiceID] = nil
         guard engine.isReady else {
@@ -427,7 +448,7 @@ struct VoiceDetailView: View {
     }
 
     private func cancelGeneration() {
-        generator.cancel(voiceID)
+        generator.cancelAll(for: voiceID)
         isWaitingForModel = false
     }
 }

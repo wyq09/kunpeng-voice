@@ -23,12 +23,13 @@ struct ModelSpec: Identifiable, Hashable {
         }
     }
 
-    /// Chinese characters per generation call; longer inputs drift in voice and content.
+    /// Chinese characters per generation call; longer inputs drift in voice and content, and
+    /// autoregressive models tend to speed up towards the end of a long chunk.
     var chunkLength: Int {
         switch family {
         case .qwen3: 120
         case .cosyVoice: 60
-        case .voxCPM2, .voxCPM15: 150
+        case .voxCPM2, .voxCPM15: 90
         }
     }
 }

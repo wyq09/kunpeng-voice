@@ -10,7 +10,7 @@ struct AmbientBackground: View {
     @State private var motion = AmbientMotion()
 
     var body: some View {
-        let isGenerating = !generator.active.isEmpty
+        let isGenerating = generator.activeRunCount > 0
         let isPaused = isReduceMotion || activeState == .inactive
         let isEnergetic = isGenerating || player.playingURL != nil
         ZStack {

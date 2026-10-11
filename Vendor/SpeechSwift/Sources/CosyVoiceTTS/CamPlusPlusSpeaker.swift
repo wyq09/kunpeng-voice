@@ -74,6 +74,15 @@ public final class CamPlusPlusSpeaker {
         return CamPlusPlusSpeaker(model: mlModel)
     }
 
+    /// CloneVoice patch: load from a directory the app downloaded itself (containing
+    /// `CamPlusPlus.mlmodelc`), bypassing the Hub cache layout.
+    public static func load(from directory: URL) throws -> CamPlusPlusSpeaker {
+        let modelURL = directory.appendingPathComponent("CamPlusPlus.mlmodelc", isDirectory: true)
+        let mlConfig = MLModelConfiguration()
+        mlConfig.computeUnits = CoreMLComputeUnitsResolver.resolved(default: .cpuAndNeuralEngine)
+        return CamPlusPlusSpeaker(model: try MLModel(contentsOf: modelURL, configuration: mlConfig))
+    }
+
     /// Extract a 192-dim speaker embedding from audio.
     ///
     /// - Parameters:

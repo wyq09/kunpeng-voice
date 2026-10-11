@@ -29,7 +29,8 @@ final class Recorder {
             .appendingPathComponent("recording-\(UUID().uuidString).wav")
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 24_000,
+            // Full band, so the denoiser (48 kHz native) sees the whole voice spectrum.
+            AVSampleRateKey: 48_000,
             AVNumberOfChannelsKey: 1,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,

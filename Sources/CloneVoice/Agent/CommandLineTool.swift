@@ -2,7 +2,7 @@ import Foundation
 
 /// `CloneVoice mcp | voices | speak …`. Any other launch opens the app.
 enum CommandLineTool {
-    static let commands: Set<String> = ["mcp", "voices", "speak", "help", "--help", "-h"]
+    static let commands: Set<String> = ["mcp", "voices", "speak", "clean", "help", "--help", "-h"]
 
     static func run(_ arguments: [String]) -> Never {
         // Model libraries print to stdout; keep it clean for results and the MCP protocol.
@@ -66,6 +66,28 @@ enum CommandLineTool {
                 return fail(error.localizedDescription)
             }
 
+        case "clean":
+            var options = Options(Array(arguments.dropFirst()))
+            let outputPath = options.value("--out", "-o")
+            guard let inputPath = options.text else { return fail("缺少音频文件。\n\(usage)") }
+            do {
+                let input = URL(fileURLWithPath: (inputPath as NSString).expandingTildeInPath)
+                FileHandle.standardError.write(Data("正在去除背景杂音…\n".utf8))
+                let result = try await VoiceCleaner.clean(input)
+                var url = result.url
+                if let outputPath {
+                    let destination = URL(fileURLWithPath: (outputPath as NSString).expandingTildeInPath)
+                    try? FileManager.default.removeItem(at: destination)
+                    try FileManager.default.moveItem(at: result.url, to: destination)
+                    url = destination
+                }
+                FileHandle.standardError.write(Data((result.method == .neural ? "AI 降噪\n" : "基础降噪\n").utf8))
+                say(url.path)
+                return 0
+            } catch {
+                return fail(error.localizedDescription)
+            }
+
         default:
             say(usage)
             return 0
@@ -81,6 +103,7 @@ enum CommandLineTool {
             --speed 慢|正常|快
         -o, --out 文件.wav                 默认 ~/Music/鲲鹏有声/
             --play                         生成后直接播放
+      clean 音频文件 [-o 输出.wav]          去除背景杂音，提取干声
       mcp                                 以 MCP 服务器运行（供 Agent 接入）
     """
 

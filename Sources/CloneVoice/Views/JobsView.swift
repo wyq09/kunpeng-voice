@@ -188,6 +188,37 @@ struct RunningJobRow: View {
     }
 }
 
+/// An in-app generation still running for this voice.
+struct RunningAppRunRow: View {
+    @Environment(Generator.self) private var generator
+
+    let run: Generator.Run
+
+    var body: some View {
+        HStack(spacing: 10) {
+            GeneratingWave().frame(width: 26, height: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(run.text).lineLimit(1)
+                TimelineView(.periodic(from: run.startedAt, by: 1)) { context in
+                    let seconds = Int(context.date.timeIntervalSince(run.startedAt))
+                    let progress = run.isPhrasing ? "智能断句中"
+                        : run.total > 1 ? "第 \(run.current)/\(run.total) 段" : "生成中"
+                    Text("应用内 · \(progress) · \(seconds) 秒")
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(Color.kpCyan.opacity(0.85))
+            }
+            Spacer()
+            Button("停止") { generator.cancel(run.id) }
+                .buttonStyle(.borderless)
+                .font(.caption)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+    }
+}
+
 private struct Tag: View {
     let text: String
     let color: Color

@@ -75,6 +75,10 @@ enum SpeechStyle: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// Appended to CosyVoice instructions: in instruction mode the model can't hear the
+    /// reference's pace, and without guidance it rushes or drags from chunk to chunk.
+    static let steadyPaceHint = "语速平稳，不要忽快忽慢。"
+
     /// Short voice description for models that take a parenthesised style prefix (VoxCPM 2).
     var styleDescription: String? {
         switch self {
@@ -101,14 +105,14 @@ enum SpeechStyle: String, CaseIterable, Identifiable, Codable {
         case .natural: Prosody(temperature: 0.9, pitchCents: 0, tempo: 1, pause: 0.25)
         case .calm: Prosody(temperature: 0.65, pitchCents: -60, tempo: 0.94, pause: 0.45)
         case .gentle: Prosody(temperature: 0.7, pitchCents: -30, tempo: 0.95, pause: 0.35)
-        case .happy: Prosody(temperature: 1.0, pitchCents: 150, tempo: 1.06, pause: 0.18)
-        case .excited: Prosody(temperature: 1.05, pitchCents: 220, tempo: 1.1, pause: 0.15)
+        case .happy: Prosody(temperature: 0.85, pitchCents: 150, tempo: 1.06, pause: 0.18)
+        case .excited: Prosody(temperature: 0.85, pitchCents: 220, tempo: 1.1, pause: 0.15)
         case .sad: Prosody(temperature: 0.7, pitchCents: -120, tempo: 0.88, pause: 0.5)
-        case .angry: Prosody(temperature: 1.0, pitchCents: 60, tempo: 1.08, pause: 0.15)
-        case .surprised: Prosody(temperature: 1.0, pitchCents: 200, tempo: 1.02, pause: 0.25)
-        case .scared: Prosody(temperature: 0.95, pitchCents: 80, tempo: 1.05, pause: 0.3)
+        case .angry: Prosody(temperature: 0.85, pitchCents: 60, tempo: 1.08, pause: 0.15)
+        case .surprised: Prosody(temperature: 0.85, pitchCents: 200, tempo: 1.02, pause: 0.25)
+        case .scared: Prosody(temperature: 0.85, pitchCents: 80, tempo: 1.05, pause: 0.3)
         case .serious: Prosody(temperature: 0.6, pitchCents: -60, tempo: 0.97, pause: 0.35)
-        case .coquettish: Prosody(temperature: 0.95, pitchCents: 180, tempo: 0.95, pause: 0.3)
+        case .coquettish: Prosody(temperature: 0.85, pitchCents: 180, tempo: 0.95, pause: 0.3)
         case .broadcast: Prosody(temperature: 0.55, pitchCents: 0, tempo: 1, pause: 0.35)
         case .story: Prosody(temperature: 0.85, pitchCents: 40, tempo: 0.92, pause: 0.6)
         case .advertisement: Prosody(temperature: 0.8, pitchCents: 80, tempo: 1.05, pause: 0.2)
@@ -120,11 +124,20 @@ enum SpeechStyle: String, CaseIterable, Identifiable, Codable {
 }
 
 struct Prosody {
+    /// Sampling temperature; emotions stay at or below 0.85, hotter sampling wanders off the
+    /// reference timbre.
     let temperature: Float
+    /// How far the emotion moves the voice. A model acting it out is expected to land around
+    /// here; audio that wasn't acted is only nudged by `appliedPitchCents`.
     let pitchCents: Float
     let tempo: Float
     /// Silence inserted between sentence groups, in seconds.
     let pause: Double
+
+    /// Pitch shift added in post. Shifting moves the formants too, and beyond half a
+    /// semitone that sounds like a different person; the rest of the emotion is left to
+    /// tempo, pauses and the model.
+    var appliedPitchCents: Float { min(max(pitchCents, -50), 50) }
 }
 
 enum SpeechSpeed: String, CaseIterable, Identifiable, Codable {
